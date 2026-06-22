@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.production
+.env.example
+gcp-key.json
+.DS_Store
+*.log
+ad-engine-frontend/build/
+ad-engine-model/venv/
+*.pem
+ad-engine-frontend/.firebase/
+ad-engine-model/output/
+ad-engine-model/venv/

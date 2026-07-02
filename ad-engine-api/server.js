@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { sendAdApprovedEmail, sendMatchNotificationEmail, setPool } = require('./emailService');
+const { resolveGeo, getClientIp } = require('./geoService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -125,6 +126,44 @@ function ensureBillingSupportTicketsTable() {
     });
   }
   return billingSupportTicketsTableReady;
+}
+
+// ── GEO LOGGING ───────────────────────────────────────────────
+
+/**
+ * Log seller geolocation data on registration
+ */
+async function logSellerGeo(sellerId, req) {
+  try {
+    const ip = getClientIp(req);
+    const geo = resolveGeo(ip);
+
+    await pool.query(
+      `INSERT INTO seller_geo_log (seller_id, ip, city, state, country, geo_match, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [sellerId, ip, geo.city, geo.state, geo.country, geo.country !== '']
+    );
+  } catch (err) {
+    console.error('Failed to log seller geo:', err.message);
+  }
+}
+
+/**
+ * Log buyer geolocation data on click
+ */
+async function logBuyerGeo(sessionId, req) {
+  try {
+    const ip = getClientIp(req);
+    const geo = resolveGeo(ip);
+
+    await pool.query(
+      `INSERT INTO buyer_geo_log (session_id, ip, city, state, country, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [sessionId, ip, geo.city, geo.state, geo.country]
+    );
+  } catch (err) {
+    console.error('Failed to log buyer geo:', err.message);
+  }
 }
 
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000', credentials: true }));
@@ -287,6 +326,10 @@ app.post('/auth/register', async (req, res) => {
        VALUES (uuid_generate_v4(),$1,$2,$3,'seller',true,now(),now()) RETURNING *`,
       [sellerRes.rows[0].id, email, hash]
     );
+
+    // Log seller geolocation on registration
+    logSellerGeo(sellerRes.rows[0].id, req);
+
     req.login(accountRes.rows[0], (err) => {
       if (err) return res.status(500).json({ error: 'Login after register failed.' });
       res.json({ success: true, user: safeUser(accountRes.rows[0]), seller: sellerRes.rows[0] });
@@ -1532,10 +1575,24 @@ No explanation, just the JSON array.`;
 
 // Log click event
 app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
-  const { match_id, ad_id } = req.body;
+  const { match_id, ad_id, session_id } = req.body;
   try {
+    let sessionIdForGeo = session_id || null;
+
     if (match_id) {
-      await pool.query(`UPDATE ad_matches SET status='clicked' WHERE id=$1`, [match_id]);
+      // Get session_id from match and update status
+      const matchRes = await pool.query(
+        `UPDATE ad_matches SET status='clicked' WHERE id=$1 RETURNING session_id`,
+        [match_id]
+      );
+      if (matchRes.rows[0] && matchRes.rows[0].session_id) {
+        sessionIdForGeo = matchRes.rows[0].session_id;
+      }
+    }
+
+    // Log buyer geolocation on click
+    if (sessionIdForGeo) {
+      logBuyerGeo(sessionIdForGeo, req);
     }
 
     if (ad_id) {

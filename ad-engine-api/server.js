@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { sendAdApprovedEmail, sendMatchNotificationEmail } = require('./emailService');
+const { sendAdApprovedEmail, sendMatchNotificationEmail, setPool } = require('./emailService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -14,6 +14,57 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+
+// ── EMAIL RATE LIMITING ───────────────────────────────────────
+// Strict rate limits for routes that trigger outbound emails
+const emailRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour window
+  max: 10, // max 10 email-triggering requests per hour per IP
+  message: { error: 'Too many email requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── PROMPT INJECTION SANITIZATION ─────────────────────────────
+// Patterns commonly used in prompt injection attacks
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(previous|above|all)\s+(instructions?|prompts?)/i,
+  /disregard\s+(previous|above|all)\s+(instructions?|prompts?)/i,
+  /forget\s+(previous|above|all)\s+(instructions?|prompts?)/i,
+  /new\s+instructions?:/i,
+  /system\s*:\s*/i,
+  /\[INST\]/i,
+  /\[\/INST\]/i,
+  /<\|im_start\|>/i,
+  /<\|im_end\|>/i,
+  /###\s*(system|user|assistant)/i,
+  /you\s+are\s+now\s+/i,
+  /act\s+as\s+if\s+/i,
+  /pretend\s+(you|to)\s+/i,
+  /roleplay\s+as\s+/i,
+  /jailbreak/i,
+  /DAN\s*mode/i,
+];
+
+function containsPromptInjection(text) {
+  if (!text || typeof text !== 'string') return false;
+  return PROMPT_INJECTION_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function sanitizeForEmail(text) {
+  if (!text || typeof text !== 'string') return text;
+  // Remove potential HTML/script tags
+  let sanitized = text.replace(/<[^>]*>/g, '');
+  // Escape special characters
+  sanitized = sanitized
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+  return sanitized;
+}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -37,6 +88,44 @@ const pool = new Pool({
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'Colleen1',
 });
+
+// Initialize email service with pool for recipient allowlist verification
+setPool(pool);
+
+let billingSupportTicketsTableReady;
+
+function ensureBillingSupportTicketsTable() {
+  if (!billingSupportTicketsTableReady) {
+    billingSupportTicketsTableReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS billing_support_tickets (
+        ticket_id TEXT PRIMARY KEY,
+        seller_id UUID NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+        seller_name TEXT NOT NULL,
+        contact_email TEXT NOT NULL,
+        routed_to TEXT NOT NULL,
+        priority TEXT NOT NULL DEFAULT 'normal',
+        subject TEXT NOT NULL,
+        description TEXT NOT NULL,
+        queue TEXT NOT NULL DEFAULT 'billing-support',
+        status TEXT NOT NULL DEFAULT 'submitted',
+        created_by_id TEXT,
+        created_by_email TEXT,
+        created_by_role TEXT,
+        auth_type TEXT,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_billing_support_tickets_seller_id
+        ON billing_support_tickets (seller_id, created_at DESC);
+    `).catch((err) => {
+      billingSupportTicketsTableReady = undefined;
+      throw err;
+    });
+  }
+  return billingSupportTicketsTableReady;
+}
 
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000', credentials: true }));
 app.use(express.json());
@@ -136,12 +225,33 @@ function generateToken(user) {
   );
 }
 
+function buildServicePrincipal() {
+  return {
+    id: 'mcp-service',
+    email: 'mcp-service@internal',
+    role: 'admin',
+    seller_id: null,
+    auth_type: 'service',
+  };
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+}
+
 function requireAuth(req, res, next) {
   if (req.isAuthenticated()) return next();
 
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
+    const serviceToken = (process.env.MCP_SERVICE_TOKEN || '').trim();
+
+    if (serviceToken && token === serviceToken) {
+      req.user = buildServicePrincipal();
+      return next();
+    }
+
     try {
       const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'ad-engine-secret-key');
       req.user = decoded;
@@ -206,6 +316,12 @@ app.get('/auth/me', (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
+    const serviceToken = (process.env.MCP_SERVICE_TOKEN || '').trim();
+
+    if (serviceToken && token === serviceToken) {
+      return res.json({ user: buildServicePrincipal() });
+    }
+
     try {
       const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'ad-engine-secret-key');
       return res.json({ user: decoded });
@@ -234,6 +350,98 @@ app.get('/api/sellers', requireAuth, async (req, res) => {
   sql += ` GROUP BY s.id ORDER BY s.created_at DESC`;
   const { rows } = await pool.query(sql, params);
   res.json(rows);
+});
+
+app.get('/api/sellers/:id/billing-status', requireAuth, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Seller id must be a valid UUID' });
+    }
+
+    const sellerFilter = await getSellerFilter(req);
+    if (sellerFilter && sellerFilter !== req.params.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const sellerSql = `
+      SELECT s.*,
+             COUNT(DISTINCT p.id) as product_count,
+             COUNT(DISTINCT a.id) as ad_count,
+             COALESCE(SUM(a.spent), 0) as ad_spend_total
+      FROM sellers s
+      LEFT JOIN products p ON p.seller_id = s.id
+      LEFT JOIN ads a ON a.product_id = p.id
+      WHERE s.id = $1
+      GROUP BY s.id
+    `;
+    const sellerRes = await pool.query(sellerSql, [req.params.id]);
+    const seller = sellerRes.rows[0];
+    if (!seller) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    let recentTransactions = [];
+    let transactionSummary = {
+      transaction_count: 0,
+      total_charges: 0,
+      total_credits: 0,
+      last_transaction_at: null,
+      source: 'unavailable',
+    };
+
+    try {
+      const txRes = await pool.query(
+        `SELECT *
+         FROM billing_transactions
+         WHERE seller_id = $1
+         ORDER BY COALESCE(created_at, updated_at, now()) DESC
+         LIMIT 10`,
+        [req.params.id]
+      );
+      recentTransactions = txRes.rows;
+
+      const summaryRes = await pool.query(
+        `SELECT
+           COUNT(*) as transaction_count,
+           COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0) as total_charges,
+           COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as total_credits,
+           MAX(COALESCE(created_at, updated_at)) as last_transaction_at
+         FROM billing_transactions
+         WHERE seller_id = $1`,
+        [req.params.id]
+      );
+      transactionSummary = {
+        ...summaryRes.rows[0],
+        source: 'billing_transactions',
+      };
+    } catch (txErr) {
+      console.warn('Billing transaction lookup unavailable:', txErr.message);
+    }
+
+    res.json({
+      seller_id: seller.id,
+      seller_name: seller.name,
+      email: seller.email,
+      plan: seller.plan,
+      status: seller.status,
+      is_verified: seller.is_verified,
+      balance: seller.balance,
+      product_count: parseInt(seller.product_count || 0, 10),
+      ad_count: parseInt(seller.ad_count || 0, 10),
+      ad_spend_total: parseFloat(seller.ad_spend_total || 0),
+      transaction_summary: {
+        transaction_count: parseInt(transactionSummary.transaction_count || 0, 10),
+        total_charges: parseFloat(transactionSummary.total_charges || 0),
+        total_credits: parseFloat(transactionSummary.total_credits || 0),
+        last_transaction_at: transactionSummary.last_transaction_at,
+        source: transactionSummary.source,
+      },
+      recent_transactions: recentTransactions,
+    });
+  } catch (err) {
+    console.error('Error loading seller billing status:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/sellers', requireAuth, async (req, res) => {
@@ -317,6 +525,37 @@ app.get('/api/ads', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/ads/:id', requireAuth, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Ad id must be a valid UUID' });
+    }
+
+    const sellerFilter = await getSellerFilter(req);
+    let sql = `SELECT a.*, p.title as product_title, p.category, p.product_url, p.image_url as product_image_url,
+                      s.name as seller_name, s.location as seller_location, s.is_verified as seller_verified,
+                      p.seller_id
+               FROM ads a
+               JOIN products p ON a.product_id = p.id
+               JOIN sellers s ON p.seller_id = s.id
+               WHERE a.id = $1`;
+    const params = [req.params.id];
+    if (sellerFilter) {
+      sql += ' AND p.seller_id = $2';
+      params.push(sellerFilter);
+    }
+
+    const { rows } = await pool.query(sql, params);
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'Ad not found' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error loading ad by id:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/ads', requireAuth, async (req, res) => {
   const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
   const { rows } = await pool.query(
@@ -376,6 +615,152 @@ app.get('/api/stats', requireAuth, async (req, res) => {
       });
     }
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/billing/support-tickets', requireAuth, async (req, res) => {
+  try {
+    await ensureBillingSupportTicketsTable();
+
+    const sellerFilter = await getSellerFilter(req);
+    const requestedSellerId = String(req.query.seller_id || '').trim() || null;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || '50', 10) || 50, 200));
+
+    if (requestedSellerId && !isUuid(requestedSellerId)) {
+      return res.status(400).json({ error: 'seller_id must be a valid UUID' });
+    }
+
+    if (sellerFilter && requestedSellerId && sellerFilter !== requestedSellerId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const effectiveSellerId = sellerFilter || requestedSellerId;
+    const params = [limit];
+    let sql = `
+      SELECT ticket_id, seller_id, seller_name, contact_email, routed_to,
+             priority, subject, description, queue, status,
+             created_by_id, created_by_email, created_by_role, auth_type,
+             metadata, created_at, updated_at
+      FROM billing_support_tickets
+    `;
+
+    if (effectiveSellerId) {
+      params.unshift(effectiveSellerId);
+      sql += ' WHERE seller_id = $1 ORDER BY created_at DESC LIMIT $2';
+    } else {
+      sql += ' ORDER BY created_at DESC LIMIT $1';
+    }
+
+    const { rows } = await pool.query(sql, params);
+    res.json({
+      count: rows.length,
+      seller_scope: effectiveSellerId,
+      tickets: rows,
+    });
+  } catch (err) {
+    console.error('Error listing billing support tickets:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/billing/support-tickets', requireAuth, async (req, res) => {
+  try {
+    const { seller_id, subject, description, email, priority } = req.body;
+    if (!seller_id || !subject || !description) {
+      return res.status(400).json({ error: 'seller_id, subject, and description are required.' });
+    }
+    if (!isUuid(seller_id)) {
+      return res.status(400).json({ error: 'seller_id must be a valid UUID' });
+    }
+
+    const sellerFilter = await getSellerFilter(req);
+    if (sellerFilter && sellerFilter !== seller_id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const sellerRes = await pool.query(
+      'SELECT id, name, email, plan, status FROM sellers WHERE id = $1',
+      [seller_id]
+    );
+    const seller = sellerRes.rows[0];
+    if (!seller) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    await ensureBillingSupportTicketsTable();
+
+    const ticketId = `bill_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const supportEmail = (process.env.SUPPORT_EMAIL || '').trim() || seller.email;
+    const createdAt = new Date().toISOString();
+    const normalizedPriority = String(priority || 'normal').trim() || 'normal';
+    const contactEmail = (email || seller.email || '').trim();
+    const createdBy = req.user || {};
+    const metadata = {
+      seller_plan: seller.plan,
+      seller_status: seller.status,
+      requester_role: createdBy.role || null,
+    };
+
+    await pool.query(
+      `INSERT INTO billing_support_tickets (
+         ticket_id,
+         seller_id,
+         seller_name,
+         contact_email,
+         routed_to,
+         priority,
+         subject,
+         description,
+         queue,
+         status,
+         created_by_id,
+         created_by_email,
+         created_by_role,
+         auth_type,
+         metadata,
+         created_at,
+         updated_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8,
+         'billing-support', 'submitted',
+         $9, $10, $11, $12, $13::jsonb, $14, $14
+       )`,
+      [
+        ticketId,
+        seller_id,
+        seller.name,
+        contactEmail,
+        supportEmail,
+        normalizedPriority,
+        subject,
+        description,
+        createdBy.id || null,
+        createdBy.email || null,
+        createdBy.role || null,
+        createdBy.auth_type || null,
+        JSON.stringify(metadata),
+        createdAt,
+      ]
+    );
+
+    res.status(201).json({
+      ticket_id: ticketId,
+      status: 'submitted',
+      queue: 'billing-support',
+      seller_id,
+      seller_name: seller.name,
+      contact_email: contactEmail,
+      routed_to: supportEmail,
+      priority: normalizedPriority,
+      subject,
+      description,
+      created_at: createdAt,
+      persistence: 'database',
+      note: 'Support ticket persisted in billing_support_tickets.',
+    });
+  } catch (err) {
+    console.error('Error creating billing support ticket:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -663,7 +1048,7 @@ app.get('/api/admin/pending-ads', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/admin/ads/:id/approve', requireAuth, async (req, res) => {
+app.post('/api/admin/ads/:id/approve', requireAuth, emailRateLimiter, async (req, res) => {
   await pool.query(
     `UPDATE ads SET status='active', updated_at=now() WHERE id=$1`,
     [req.params.id]
@@ -680,7 +1065,10 @@ app.post('/api/admin/ads/:id/approve', requireAuth, async (req, res) => {
     );
     if (result.rows[0]) {
       const { title, email, name } = result.rows[0];
-      sendAdApprovedEmail(email, name, title);
+      // Sanitize inputs before sending email
+      const sanitizedTitle = sanitizeForEmail(title);
+      const sanitizedName = sanitizeForEmail(name);
+      sendAdApprovedEmail(email, sanitizedName, sanitizedTitle);
     }
   } catch (emailErr) {
     console.error('Could not send approval email:', emailErr);
@@ -1143,7 +1531,7 @@ No explanation, just the JSON array.`;
 });
 
 // Log click event
-app.post('/api/buyer/click', async (req, res) => {
+app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
   const { match_id, ad_id } = req.body;
   try {
     if (match_id) {
@@ -1162,7 +1550,10 @@ app.post('/api/buyer/click', async (req, res) => {
         );
         if (result.rows[0]) {
           const { title, email, name } = result.rows[0];
-          sendMatchNotificationEmail(email, name, title, 'click');
+          // Sanitize inputs before sending email
+          const sanitizedTitle = sanitizeForEmail(title);
+          const sanitizedName = sanitizeForEmail(name);
+          sendMatchNotificationEmail(email, sanitizedName, sanitizedTitle, 'click');
         }
       } catch (emailErr) {
         console.error('Could not send click email:', emailErr);

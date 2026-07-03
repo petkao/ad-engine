@@ -94,6 +94,17 @@ function AppShell() {
   // Determine if user is admin early for effects
   const userIsAdmin = user?.role === 'admin';
 
+  // Reset page to appropriate default when user changes (login/logout/switch accounts)
+  // Admin default: 'pending' (Pending Approval page)
+  // Seller default: 'dashboard'
+  useEffect(() => {
+    if (user) {
+      const defaultPage = user.role === 'admin' ? 'pending' : 'dashboard';
+      console.log('[App.js] Setting default page for role:', user.role, '→', defaultPage);
+      setPage(defaultPage);
+    }
+  }, [user?.id]); // Only run when user ID changes
+
   // Fetch pending count for admin users only
   useEffect(() => {
     if (userIsAdmin) {

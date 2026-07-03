@@ -215,13 +215,15 @@ async function logSellerGeo(sellerId, req, claimedLocation = null) {
       [sellerId, ip, geo.city, geo.state, geo.country, geoMatch]
     );
 
-    // Update seller's geo_verified status
+    // Update seller's verification status
     // Only set location if not already provided by user
+    // Set BOTH is_verified and geo_verified when geo match succeeds
     if (detectedLocation) {
       await pool.query(
         `UPDATE sellers
          SET location = COALESCE(NULLIF(location, ''), $2),
              geo_verified = $3,
+             is_verified = CASE WHEN $3 = true THEN true ELSE is_verified END,
              updated_at = NOW()
          WHERE id = $1`,
         [sellerId, detectedLocation, geoMatch]

@@ -95,7 +95,7 @@ export default function Sellers() {
     { key: 'balance', label: 'Balance', render: v => <span className="font-mono text-green-700">${parseFloat(v).toFixed(2)}</span> },
     { key: 'status', label: 'Status', render: v => <Badge variant={v}>{v}</Badge> },
     { key: 'location', label: 'Location', render: v => v ? <span className="text-xs text-slate-500">📍 {v}</span> : <span className="text-xs text-slate-300">Not set</span> },
-    { key: 'is_verified', label: 'Verified', sortable: false, render: v => v 
+    { key: 'is_verified', label: 'Verified', sortable: false, render: (v, row) => (v || row.geo_verified)
       ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">✅ Verified</span>
       : <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Unverified</span>
     },

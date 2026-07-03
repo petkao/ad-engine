@@ -712,8 +712,31 @@ app.delete('/api/ads/:id', requireAuth, async (req, res) => {
 });
 
 app.get('/api/buyers', requireAuth, requireAdmin, async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM buyers ORDER BY created_at DESC');
-  res.json(rows);
+  try {
+    // Join buyers with their most recent geo location via buyer_sessions
+    const { rows } = await pool.query(`
+      SELECT
+        b.*,
+        geo.city,
+        geo.state,
+        geo.country,
+        geo.ip as last_ip
+      FROM buyers b
+      LEFT JOIN LATERAL (
+        SELECT bgl.city, bgl.state, bgl.country, bgl.ip
+        FROM buyer_sessions bs
+        JOIN buyer_geo_log bgl ON bgl.session_id = bs.id::text
+        WHERE bs.buyer_id = b.id
+        ORDER BY bgl.created_at DESC
+        LIMIT 1
+      ) geo ON true
+      ORDER BY b.created_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching buyers:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/stats', requireAuth, async (req, res) => {

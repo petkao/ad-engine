@@ -17,11 +17,22 @@ export default function Buyers() {
     b.model_version.toLowerCase().includes(search.toLowerCase())
   );
 
+  const formatLocation = (row) => {
+    const parts = [row.city, row.state, row.country].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : null;
+  };
+
   const columns = [
     { key: 'device_id', label: 'Device ID', render: v => (
       <span className="font-mono text-xs text-slate-500">{v}</span>
     )},
     { key: 'platform', label: 'Platform', render: v => <Badge>{v}</Badge> },
+    { key: 'city', label: 'Location', render: (v, row) => {
+      const loc = formatLocation(row);
+      return loc
+        ? <span className="text-xs text-slate-500">📍 {loc}</span>
+        : <span className="text-xs text-slate-300">Unknown</span>;
+    }},
     { key: 'model_version', label: 'LLM Version', render: v => (
       <span className="font-mono text-xs text-blue-600">{v}</span>
     )},

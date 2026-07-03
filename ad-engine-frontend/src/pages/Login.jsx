@@ -11,7 +11,7 @@ const INDUSTRIES = [
 export default function Login() {
   const { login, register, loginWithGoogle } = useAuth();
   const [mode, setMode] = useState('login'); // 'login' | 'register'
-  const [form, setForm] = useState({ name: '', email: '', password: '', industry: 'General' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', industry: 'General', location: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -95,6 +95,8 @@ export default function Login() {
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-400 transition-all">
                   {INDUSTRIES.map(i => <option key={i} value={i} className="bg-slate-800">{i}</option>)}
                 </select>
+                <input value={form.location} onChange={set('location')} placeholder="Business location (e.g., San Jose, CA)"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-blue-400 focus:bg-white/10 transition-all" />
               </>
             )}
             <input value={form.email} onChange={set('email')} placeholder="Email address" type="email"

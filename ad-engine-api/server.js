@@ -176,14 +176,37 @@ function ensureGeoLogTables() {
 
 /**
  * Log seller geolocation data on registration
- * Also updates seller's location and geo_verified if not already set
+ * Compares claimed location (from form) with detected location (from IP)
+ * @param {string} sellerId - Seller UUID
+ * @param {Request} req - Express request object
+ * @param {string|null} claimedLocation - Location provided by seller in registration form
  */
-async function logSellerGeo(sellerId, req) {
+async function logSellerGeo(sellerId, req, claimedLocation = null) {
   try {
     await ensureGeoLogTables();
     const ip = getClientIp(req);
     const geo = resolveGeo(ip);
-    const geoMatch = geo.country !== '';
+
+    // Build detected location string
+    const locationParts = [geo.city, geo.state, geo.country].filter(Boolean);
+    const detectedLocation = locationParts.join(', ');
+
+    // Determine geo_match by comparing claimed vs detected
+    // Match if: geo lookup succeeded AND (no claimed location OR claimed contains matching parts)
+    let geoMatch = false;
+    if (geo.country) {
+      if (!claimedLocation) {
+        // No claimed location - just verify geo lookup worked
+        geoMatch = true;
+      } else {
+        // Compare claimed with detected (case-insensitive partial match)
+        const claimed = claimedLocation.toLowerCase();
+        const matchesCity = geo.city && claimed.includes(geo.city.toLowerCase());
+        const matchesState = geo.state && claimed.includes(geo.state.toLowerCase());
+        const matchesCountry = geo.country && claimed.includes(geo.country.toLowerCase());
+        geoMatch = matchesCity || matchesState || matchesCountry;
+      }
+    }
 
     // Insert into geo log
     await pool.query(
@@ -192,11 +215,8 @@ async function logSellerGeo(sellerId, req) {
       [sellerId, ip, geo.city, geo.state, geo.country, geoMatch]
     );
 
-    // Build location string from detected geo
-    const locationParts = [geo.city, geo.state, geo.country].filter(Boolean);
-    const detectedLocation = locationParts.join(', ');
-
-    // Update seller's location and geo_verified if location not already set
+    // Update seller's geo_verified status
+    // Only set location if not already provided by user
     if (detectedLocation) {
       await pool.query(
         `UPDATE sellers
@@ -208,7 +228,7 @@ async function logSellerGeo(sellerId, req) {
       );
     }
 
-    console.log(`Logged seller geo: ${sellerId} from ${ip} (${detectedLocation}) - geo_verified: ${geoMatch}`);
+    console.log(`Logged seller geo: ${sellerId} from ${ip} - claimed: "${claimedLocation || 'none'}", detected: "${detectedLocation}", match: ${geoMatch}`);
   } catch (err) {
     console.error('Failed to log seller geo:', err.message);
   }
@@ -377,7 +397,7 @@ function safeUser(user) {
 
 // ── AUTH ROUTES ───────────────────────────────────────────────
 app.post('/auth/register', async (req, res) => {
-  const { name, email, password, industry } = req.body;
+  const { name, email, password, industry, location } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   try {
@@ -385,9 +405,9 @@ app.post('/auth/register', async (req, res) => {
     if (existing.rows.length) return res.status(409).json({ error: 'An account with this email already exists.' });
     const hash = await bcrypt.hash(password, 12);
     const sellerRes = await pool.query(
-      `INSERT INTO sellers (id,name,email,industry,plan,balance,contact_info,status,created_at,updated_at)
-       VALUES (uuid_generate_v4(),$1,$2,$3,'starter',0,'{}','active',now(),now()) RETURNING *`,
-      [name, email, industry || 'General']
+      `INSERT INTO sellers (id,name,email,industry,location,plan,balance,contact_info,status,created_at,updated_at)
+       VALUES (uuid_generate_v4(),$1,$2,$3,$4,'starter',0,'{}','active',now(),now()) RETURNING *`,
+      [name, email, industry || 'General', location || null]
     );
     const accountRes = await pool.query(
       `INSERT INTO seller_accounts (id,seller_id,email,password_hash,role,is_verified,created_at,updated_at)
@@ -395,8 +415,8 @@ app.post('/auth/register', async (req, res) => {
       [sellerRes.rows[0].id, email, hash]
     );
 
-    // Log seller geolocation on registration
-    logSellerGeo(sellerRes.rows[0].id, req);
+    // Log seller geolocation on registration (pass claimed location for comparison)
+    logSellerGeo(sellerRes.rows[0].id, req, location || null);
 
     req.login(accountRes.rows[0], (err) => {
       if (err) return res.status(500).json({ error: 'Login after register failed.' });

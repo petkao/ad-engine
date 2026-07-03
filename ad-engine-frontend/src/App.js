@@ -16,17 +16,23 @@ import VerifyEmail from './pages/VerifyEmail';
 import PendingApproval from './pages/PendingApproval';
 import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
 
+// Navigation items with role-based access
+// Sellers can ONLY see: Dashboard, Products, Ads, Analytics
+// Admins can see all pages
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
-  { id: 'analytics', label: 'Analytics', icon: '📊', roles: ['admin', 'seller'] },
-  { id: 'pending', label: 'Pending Approval', icon: '⏳', roles: ['admin'], badge: true },
-  { id: 'sellers', label: 'Sellers', icon: '🏪', roles: ['admin', 'seller'] },
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
+  { id: 'analytics', label: 'Analytics', icon: '📊', roles: ['admin', 'seller'] },
+  { id: 'pending', label: 'Pending Approval', icon: '⏳', roles: ['admin'], badge: true },
+  { id: 'sellers', label: 'Sellers', icon: '🏪', roles: ['admin'] },
   { id: 'buyers', label: 'Buyers', icon: '👥', roles: ['admin'] },
   { id: 'events', label: 'Ad Event Log', icon: '📋', roles: ['admin'] },
   { id: 'geo', label: 'Geo Verification', icon: '📍', roles: ['admin'] },
 ];
+
+// Pages that are admin-only (for route protection)
+const ADMIN_ONLY_PAGES = ['pending', 'sellers', 'buyers', 'events', 'geo'];
 
 const PAGES = {
   dashboard: Dashboard, analytics: Analytics,
@@ -133,7 +139,9 @@ function AppShell() {
     </div>
   );
 
-  const Page = PAGES[page];
+  // Route protection: if seller tries to access admin-only page, redirect to dashboard
+  const effectivePage = (user.role !== 'admin' && ADMIN_ONLY_PAGES.includes(page)) ? 'dashboard' : page;
+  const Page = PAGES[effectivePage];
   const showEmailBanner = user.email_verified === false && user.role !== 'admin';
 
   return (
@@ -148,22 +156,25 @@ function AppShell() {
         <nav className="flex-1 px-3 py-4 space-y-1">
           {ALL_NAV.filter(item => item.roles.includes(user.role || 'seller')).map(item => (
             <button key={item.id} onClick={() => setPage(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${page === item.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${effectivePage === item.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
               <span>{item.icon}</span>
               <span className="flex-1 text-left">{item.label}</span>
               {item.badge && pendingCount > 0 && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-full min-w-[20px] text-center ${page === item.id ? 'bg-white/20 text-white' : 'bg-pink-500 text-white'}`}>
+                <span className={`text-xs px-1.5 py-0.5 rounded-full min-w-[20px] text-center ${effectivePage === item.id ? 'bg-white/20 text-white' : 'bg-pink-500 text-white'}`}>
                   {pendingCount}
                 </span>
               )}
             </button>
           ))}
-          <div className="pt-2 mt-2 border-t border-slate-100">
-            <button onClick={() => setBuyerMode(true)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-green-600 hover:bg-green-50 transition-all">
-              <span>🛍️</span><span>Buyer Search</span>
-            </button>
-          </div>
+          {/* Only show Buyer Search for admin users */}
+          {user.role === 'admin' && (
+            <div className="pt-2 mt-2 border-t border-slate-100">
+              <button onClick={() => setBuyerMode(true)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-green-600 hover:bg-green-50 transition-all">
+                <span>🛍️</span><span>Buyer Search</span>
+              </button>
+            </div>
+          )}
         </nav>
         <div className="px-4 py-4 border-t border-slate-100">
           <div className="flex items-center gap-2 mb-3">

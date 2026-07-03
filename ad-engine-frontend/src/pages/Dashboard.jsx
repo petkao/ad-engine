@@ -124,13 +124,15 @@ function AdminDashboard() {
 // ── Seller Dashboard ──────────────────────────────────────────
 function SellerDashboard({ user }) {
   const [stats, setStats] = useState(null);
+  const [geoData, setGeoData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       fetch(`${BASE}/api/products`, { headers: getHeaders() }).then(r => r.json()),
       fetch(`${BASE}/api/ads`, { headers: getHeaders() }).then(r => r.json()),
-    ]).then(([products, ads]) => {
+      fetch(`${BASE}/api/sellers/my-geo`, { headers: getHeaders() }).then(r => r.ok ? r.json() : null),
+    ]).then(([products, ads, geo]) => {
       const activeAds = Array.isArray(ads) ? ads.filter(a => a.status === 'active') : [];
       const totalSpent = Array.isArray(ads) ? ads.reduce((sum, a) => sum + parseFloat(a.spent || 0), 0) : 0;
       setStats({
@@ -139,6 +141,7 @@ function SellerDashboard({ user }) {
         activeAds: activeAds.length,
         spent: totalSpent,
       });
+      setGeoData(geo);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -160,6 +163,19 @@ function SellerDashboard({ user }) {
         <StatCard label="Active Ads"    value={stats?.activeAds|| 0} icon="✅" color="green" />
         <StatCard label="Total Spent"   value={`$${(stats?.spent || 0).toFixed(2)}`} icon="💰" color="amber" />
       </div>
+
+      {/* Detected Location Card */}
+      {geoData && (geoData.city || geoData.country) && (
+        <div className="bg-white rounded-2xl border border-slate-100 p-4 mb-8 flex items-center gap-4">
+          <div className="text-2xl">📍</div>
+          <div>
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Your Detected Location</div>
+            <div className="text-sm text-slate-700 mt-0.5">
+              {[geoData.city, geoData.state, geoData.country].filter(Boolean).join(', ') || 'Unknown'}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Getting started guide for new sellers */}
       {isNew && (

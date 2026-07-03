@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -7,6 +7,7 @@ import Products from './pages/Products';
 import Ads from './pages/Ads';
 import Buyers from './pages/Buyers';
 import Analytics from './pages/Analytics';
+import GeoVerification from './pages/GeoVerification';
 import BuyerSearch from './pages/BuyerSearch';
 import BuyerLanding from './pages/BuyerLanding';
 
@@ -17,12 +18,13 @@ const ALL_NAV = [
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
   { id: 'buyers', label: 'Buyers', icon: '👥', roles: ['admin'] },
+  { id: 'geo', label: 'Geo Verification', icon: '📍', roles: ['admin'] },
 ];
 
 const PAGES = {
   dashboard: Dashboard, analytics: Analytics,
   sellers: Sellers, products: Products,
-  ads: Ads, buyers: Buyers,
+  ads: Ads, buyers: Buyers, geo: GeoVerification,
 };
 
 function AppShell() {

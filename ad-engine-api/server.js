@@ -1129,6 +1129,91 @@ app.post('/api/admin/ads/:id/reject', requireAuth, async (req, res) => {
   res.json({ success: true, status: 'rejected', reason });
 });
 
+// ── GEO VERIFICATION ROUTES ──────────────────────────────────
+
+// Admin: Get seller geo logs with seller info
+app.get('/api/admin/seller-geo-logs', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        sgl.id,
+        sgl.seller_id,
+        s.name as seller_name,
+        s.email as seller_email,
+        s.location as claimed_location,
+        sgl.ip,
+        sgl.city as detected_city,
+        sgl.state as detected_state,
+        sgl.country as detected_country,
+        sgl.geo_match,
+        sgl.created_at
+      FROM seller_geo_log sgl
+      LEFT JOIN sellers s ON sgl.seller_id = s.id
+      ORDER BY sgl.created_at DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching seller geo logs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get buyer geo logs
+app.get('/api/admin/buyer-geo-logs', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        id,
+        session_id,
+        ip,
+        city,
+        state,
+        country,
+        created_at
+      FROM buyer_geo_log
+      ORDER BY created_at DESC
+      LIMIT 100
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching buyer geo logs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Seller: Get own most recent geo log entry
+app.get('/api/sellers/my-geo', requireAuth, async (req, res) => {
+  try {
+    const sellerId = req.user?.seller_id;
+    if (!sellerId) {
+      return res.status(400).json({ error: 'No seller associated with this account' });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT
+        city,
+        state,
+        country,
+        ip,
+        created_at
+      FROM seller_geo_log
+      WHERE seller_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [sellerId]);
+
+    if (rows.length === 0) {
+      return res.json({ city: null, state: null, country: null });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error fetching seller geo:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── EXTENSION ENDPOINT ───────────────────────────────────────
 // Accepts raw page context from extension, extracts intent server-side
 // Buyers don't need OpenAI API key — server handles everything

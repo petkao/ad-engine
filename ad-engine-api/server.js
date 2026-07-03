@@ -130,11 +130,51 @@ function ensureBillingSupportTicketsTable() {
 
 // ── GEO LOGGING ───────────────────────────────────────────────
 
+let geoLogTablesReady;
+
+function ensureGeoLogTables() {
+  if (!geoLogTablesReady) {
+    geoLogTablesReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS seller_geo_log (
+        id SERIAL PRIMARY KEY,
+        seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
+        ip VARCHAR(45),
+        city VARCHAR(100),
+        state VARCHAR(100),
+        country VARCHAR(100),
+        geo_match BOOLEAN,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_seller_geo_log_seller_id
+        ON seller_geo_log (seller_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS buyer_geo_log (
+        id SERIAL PRIMARY KEY,
+        session_id VARCHAR(255),
+        ip VARCHAR(45),
+        city VARCHAR(100),
+        state VARCHAR(100),
+        country VARCHAR(100),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_buyer_geo_log_session_id
+        ON buyer_geo_log (session_id, created_at DESC);
+    `).catch((err) => {
+      geoLogTablesReady = undefined;
+      console.error('Failed to create geo log tables:', err.message);
+    });
+  }
+  return geoLogTablesReady;
+}
+
 /**
  * Log seller geolocation data on registration
  */
 async function logSellerGeo(sellerId, req) {
   try {
+    await ensureGeoLogTables();
     const ip = getClientIp(req);
     const geo = resolveGeo(ip);
 
@@ -143,6 +183,7 @@ async function logSellerGeo(sellerId, req) {
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
       [sellerId, ip, geo.city, geo.state, geo.country, geo.country !== '']
     );
+    console.log(`Logged seller geo: ${sellerId} from ${ip} (${geo.city}, ${geo.state}, ${geo.country})`);
   } catch (err) {
     console.error('Failed to log seller geo:', err.message);
   }
@@ -153,6 +194,7 @@ async function logSellerGeo(sellerId, req) {
  */
 async function logBuyerGeo(sessionId, req) {
   try {
+    await ensureGeoLogTables();
     const ip = getClientIp(req);
     const geo = resolveGeo(ip);
 
@@ -161,6 +203,7 @@ async function logBuyerGeo(sessionId, req) {
        VALUES ($1, $2, $3, $4, $5, NOW())`,
       [sessionId, ip, geo.city, geo.state, geo.country]
     );
+    console.log(`Logged buyer geo: ${sessionId} from ${ip} (${geo.city}, ${geo.state}, ${geo.country})`);
   } catch (err) {
     console.error('Failed to log buyer geo:', err.message);
   }

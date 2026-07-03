@@ -1,9 +1,36 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { useAuth } from '../auth/AuthContext';
 import {
   PageHeader, Button, Badge, SearchBar, Spinner,
   Modal, Field, Input, Select
 } from '../components/UI';
+
+function ApprovalStatusBadge({ status }) {
+  const styles = {
+    pending_review: 'bg-yellow-100 text-yellow-700',
+    approved: 'bg-green-100 text-green-700',
+    rejected: 'bg-red-100 text-red-700',
+    suspended: 'bg-slate-200 text-slate-700',
+  };
+  const labels = {
+    pending_review: 'Pending Review',
+    approved: 'Approved',
+    rejected: 'Rejected',
+    suspended: 'Suspended',
+  };
+  const icons = {
+    pending_review: '\uD83D\uDFE1',
+    approved: '\uD83D\uDFE2',
+    rejected: '\uD83D\uDD34',
+    suspended: '\u26D4',
+  };
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || styles.pending_review}`}>
+      {icons[status] || icons.pending_review} {labels[status] || status || 'Unknown'}
+    </span>
+  );
+}
 
 const INDUSTRIES = [
   'Sports & Outdoors','Electronics','Fashion & Apparel','Home & Garden',
@@ -60,10 +87,13 @@ function SellerForm({ initial = {}, sellers, onSave, onClose }) {
 }
 
 export default function Sellers() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [sellers, setSellers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState(null); // null | 'create' | seller obj
+  const [processing, setProcessing] = useState({});
 
   const load = () => api.getSellers().then(setSellers).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
@@ -79,6 +109,34 @@ export default function Sellers() {
     if (!window.confirm('Delete this seller and all their products/ads?')) return;
     await api.deleteSeller(id);
     load();
+  };
+
+  const handleSuspend = async (seller) => {
+    if (!window.confirm(`Suspend ${seller.name}? They will not be able to create new ads.`)) return;
+    setProcessing(p => ({ ...p, [seller.id]: 'suspending' }));
+    try {
+      await api.suspendSeller(seller.id);
+      load();
+    } catch (err) {
+      console.error('Failed to suspend seller:', err);
+      alert('Failed to suspend seller');
+    } finally {
+      setProcessing(p => ({ ...p, [seller.id]: null }));
+    }
+  };
+
+  const handleUnsuspend = async (seller) => {
+    if (!window.confirm(`Unsuspend ${seller.name}? They will be able to create ads again.`)) return;
+    setProcessing(p => ({ ...p, [seller.id]: 'unsuspending' }));
+    try {
+      await api.unsuspendSeller(seller.id);
+      load();
+    } catch (err) {
+      console.error('Failed to unsuspend seller:', err);
+      alert('Failed to unsuspend seller');
+    } finally {
+      setProcessing(p => ({ ...p, [seller.id]: null }));
+    }
   };
 
   const filtered = sellers.filter(s =>
@@ -108,6 +166,7 @@ export default function Sellers() {
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Email</th>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Plan</th>
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Balance</th>
+                  {isAdmin && <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Status</th>}
                   <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Verified</th>
                   <th className="text-right py-3 px-4 text-xs font-semibold text-slate-400 uppercase" style={{ position: 'sticky', right: 0, background: 'white' }}>Actions</th>
                 </tr>
@@ -119,15 +178,20 @@ export default function Sellers() {
                     <td className="py-3 px-4 text-slate-500 text-sm">{seller.email}</td>
                     <td className="py-3 px-4"><Badge variant={seller.plan}>{seller.plan}</Badge></td>
                     <td className="py-3 px-4 font-mono text-green-700">${parseFloat(seller.balance || 0).toFixed(2)}</td>
+                    {isAdmin && (
+                      <td className="py-3 px-4">
+                        <ApprovalStatusBadge status={seller.approval_status} />
+                      </td>
+                    )}
                     <td className="py-3 px-4">
                       {seller.email_verified && seller.geo_verified ? (
-                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">✅ Verified</span>
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Verified</span>
                       ) : seller.geo_verified ? (
-                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">📧 Email</span>
+                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">Email</span>
                       ) : seller.email_verified ? (
-                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">📍 Geo</span>
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">Geo</span>
                       ) : (
-                        <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">⏳ Pending</span>
+                        <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">Pending</span>
                       )}
                     </td>
                     <td className="py-3 px-4 text-right" style={{ position: 'sticky', right: 0, background: 'white' }}>
@@ -136,13 +200,31 @@ export default function Sellers() {
                           onClick={() => setModal(seller)}
                           className="px-3 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 rounded-md"
                         >
-                          ✏️ Edit
+                          Edit
                         </button>
+                        {isAdmin && seller.approval_status === 'approved' && (
+                          <button
+                            onClick={() => handleSuspend(seller)}
+                            disabled={!!processing[seller.id]}
+                            className="px-3 py-1.5 text-xs bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded-md disabled:opacity-50"
+                          >
+                            {processing[seller.id] === 'suspending' ? 'Suspending...' : 'Suspend'}
+                          </button>
+                        )}
+                        {isAdmin && seller.approval_status === 'suspended' && (
+                          <button
+                            onClick={() => handleUnsuspend(seller)}
+                            disabled={!!processing[seller.id]}
+                            className="px-3 py-1.5 text-xs bg-green-100 text-green-700 hover:bg-green-200 rounded-md disabled:opacity-50"
+                          >
+                            {processing[seller.id] === 'unsuspending' ? 'Unsuspending...' : 'Unsuspend'}
+                          </button>
+                        )}
                         <button
                           onClick={() => handleDelete(seller.id)}
                           className="px-3 py-1.5 text-xs bg-red-100 text-red-700 hover:bg-red-200 rounded-md"
                         >
-                          🗑️ Delete
+                          Delete
                         </button>
                       </div>
                     </td>

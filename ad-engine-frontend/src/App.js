@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { api } from './api/client';
 import Login from './pages/Login';
@@ -13,10 +13,12 @@ import AdEventLog from './pages/AdEventLog';
 import BuyerSearch from './pages/BuyerSearch';
 import BuyerLanding from './pages/BuyerLanding';
 import VerifyEmail from './pages/VerifyEmail';
+import PendingApproval from './pages/PendingApproval';
 
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
   { id: 'analytics', label: 'Analytics', icon: '📊', roles: ['admin', 'seller'] },
+  { id: 'pending', label: 'Pending Approval', icon: '⏳', roles: ['admin'], badge: true },
   { id: 'sellers', label: 'Sellers', icon: '🏪', roles: ['admin', 'seller'] },
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
@@ -27,7 +29,7 @@ const ALL_NAV = [
 
 const PAGES = {
   dashboard: Dashboard, analytics: Analytics,
-  sellers: Sellers, products: Products,
+  pending: PendingApproval, sellers: Sellers, products: Products,
   ads: Ads, buyers: Buyers, events: AdEventLog, geo: GeoVerification,
 };
 
@@ -80,6 +82,16 @@ function AppShell() {
   const { user, loading, logout } = useAuth();
   const [page, setPage] = useState('dashboard');
   const [buyerMode, setBuyerMode] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+
+  // Fetch pending count for admin users
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      api.getPendingSellersCount()
+        .then(data => setPendingCount(data.count || 0))
+        .catch(() => setPendingCount(0));
+    }
+  }, [user, page]); // Refresh when page changes (in case they just approved someone)
 
   // Check if this is a public page
   const isSearchPage = window.location.pathname === '/search';
@@ -130,7 +142,13 @@ function AppShell() {
           {ALL_NAV.filter(item => item.roles.includes(user.role || 'seller')).map(item => (
             <button key={item.id} onClick={() => setPage(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${page === item.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
-              <span>{item.icon}</span><span>{item.label}</span>
+              <span>{item.icon}</span>
+              <span className="flex-1 text-left">{item.label}</span>
+              {item.badge && pendingCount > 0 && (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full min-w-[20px] text-center ${page === item.id ? 'bg-white/20 text-white' : 'bg-pink-500 text-white'}`}>
+                  {pendingCount}
+                </span>
+              )}
             </button>
           ))}
           <div className="pt-2 mt-2 border-t border-slate-100">

@@ -64,4 +64,11 @@ export const api = {
     const qs = queryParams.toString();
     return request(`/admin/ad-events${qs ? `?${qs}` : ''}`);
   },
+  // Seller approval endpoints
+  getPendingSellers: () => request('/admin/sellers/pending'),
+  getPendingSellersCount: () => request('/admin/sellers/pending/count'),
+  approveSeller: (id) => request(`/admin/sellers/${id}/approve`, { method: 'PUT' }),
+  rejectSeller: (id) => request(`/admin/sellers/${id}/reject`, { method: 'PUT' }),
+  suspendSeller: (id) => request(`/admin/sellers/${id}/suspend`, { method: 'PUT' }),
+  unsuspendSeller: (id) => request(`/admin/sellers/${id}/unsuspend`, { method: 'PUT' }),
 };

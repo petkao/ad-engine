@@ -67,10 +67,6 @@ function getAdImageUrl(ad) {
 
 function AdListRow({ ad, rank, onClick }) {
   const imageUrl = getAdImageUrl(ad);
-  if (ad.headline === 'See everything on the road') {
-    console.log('DEBUG ad:', ad);
-    console.log('DEBUG imageUrl:', imageUrl);
-  }
 
   return (
     <div onClick={() => onClick(ad)}

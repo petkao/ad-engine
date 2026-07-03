@@ -1,5 +1,14 @@
 require('dotenv').config();
-const { sendAdApprovedEmail, sendMatchNotificationEmail, sendVerificationEmail, setPool } = require('./emailService');
+const {
+  sendAdApprovedEmail,
+  sendMatchNotificationEmail,
+  sendVerificationEmail,
+  sendNewSellerAdminNotification,
+  sendSellerApprovedEmail,
+  sendSellerRejectedEmail,
+  sendSellerSuspendedEmail,
+  setPool
+} = require('./emailService');
 const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const OpenAI = require('openai');
@@ -208,6 +217,9 @@ function ensureGeoLogTables() {
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false;
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR(255);
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verification_expires TIMESTAMPTZ;
+
+      -- Add approval status column for admin review workflow
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'pending_review';
     `).catch((err) => {
       geoLogTablesReady = undefined;
       console.error('Failed to create geo log tables:', err.message);
@@ -392,8 +404,8 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_ID !== 'your-googl
         await pool.query('UPDATE seller_accounts SET google_id=$1,avatar_url=$2,last_login=now() WHERE id=$3', [googleId, avatarUrl, user.id]);
       } else {
         const sellerRes = await pool.query(
-          `INSERT INTO sellers (id,name,email,industry,plan,balance,contact_info,status,created_at,updated_at)
-           VALUES (uuid_generate_v4(),$1,$2,'General','starter',0,'{}','active',now(),now()) RETURNING *`,
+          `INSERT INTO sellers (id,name,email,industry,plan,balance,contact_info,status,approval_status,created_at,updated_at)
+           VALUES (uuid_generate_v4(),$1,$2,'General','starter',0,'{}','active','pending_review',now(),now()) RETURNING *`,
           [displayName, email]
         );
         const accountRes = await pool.query(
@@ -402,6 +414,14 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_ID !== 'your-googl
           [sellerRes.rows[0].id, email, googleId, email, avatarUrl]
         );
         user = accountRes.rows[0];
+
+        // Send admin notification for new Google OAuth registration
+        sendNewSellerAdminNotification({
+          name: displayName,
+          email,
+          industry: 'General',
+          location: null
+        });
       }
       return done(null, user);
     } catch (err) { return done(err); }
@@ -493,8 +513,8 @@ app.post('/auth/register', async (req, res) => {
 
     const hash = await bcrypt.hash(password, 12);
     const sellerRes = await pool.query(
-      `INSERT INTO sellers (id,name,email,industry,location,plan,balance,contact_info,status,email_verified,email_verification_token,email_verification_expires,created_at,updated_at)
-       VALUES (uuid_generate_v4(),$1,$2,$3,$4,'starter',0,'{}','active',false,$5,$6,now(),now()) RETURNING *`,
+      `INSERT INTO sellers (id,name,email,industry,location,plan,balance,contact_info,status,email_verified,email_verification_token,email_verification_expires,approval_status,created_at,updated_at)
+       VALUES (uuid_generate_v4(),$1,$2,$3,$4,'starter',0,'{}','active',false,$5,$6,'pending_review',now(),now()) RETURNING *`,
       [name, email, industry || 'General', location || null, verificationToken, verificationExpires]
     );
     const accountRes = await pool.query(
@@ -508,6 +528,14 @@ app.post('/auth/register', async (req, res) => {
 
     // Send verification email
     sendVerificationEmail(email, name, verificationToken);
+
+    // Send admin notification email for new seller registration
+    sendNewSellerAdminNotification({
+      name,
+      email,
+      industry: industry || 'General',
+      location: location || null
+    });
 
     req.login(accountRes.rows[0], (err) => {
       if (err) return res.status(500).json({ error: 'Login after register failed.' });
@@ -970,13 +998,39 @@ app.get('/api/ads/:id', requireAuth, async (req, res) => {
 });
 
 app.post('/api/ads', requireAuth, async (req, res) => {
-  const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
-  const { rows } = await pool.query(
-    `INSERT INTO ads (id,product_id,format,headline,body_copy,intent_tags,cost_per_match,daily_budget,total_budget,spent,status,created_at,updated_at)
-     VALUES (uuid_generate_v4(),$1,$2,$3,$4,$5,$6,$7,$8,0,'active',now(),now()) RETURNING *`,
-    [product_id, format, headline, body_copy, JSON.stringify(intent_tags || []), cost_per_match || 0.01, daily_budget || 50, total_budget || 500]
-  );
-  res.json(rows[0]);
+  try {
+    // Check seller approval status before allowing ad creation
+    const sellerId = req.user?.seller_id;
+    if (sellerId) {
+      const sellerResult = await pool.query(
+        'SELECT approval_status FROM sellers WHERE id = $1',
+        [sellerId]
+      );
+      if (sellerResult.rows.length > 0) {
+        const approvalStatus = sellerResult.rows[0].approval_status;
+        if (approvalStatus !== 'approved') {
+          let message = 'Your account is pending admin review';
+          if (approvalStatus === 'rejected') {
+            message = 'Your account application was not approved';
+          } else if (approvalStatus === 'suspended') {
+            message = 'Your account has been suspended';
+          }
+          return res.status(403).json({ error: message });
+        }
+      }
+    }
+
+    const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO ads (id,product_id,format,headline,body_copy,intent_tags,cost_per_match,daily_budget,total_budget,spent,status,created_at,updated_at)
+       VALUES (uuid_generate_v4(),$1,$2,$3,$4,$5,$6,$7,$8,0,'active',now(),now()) RETURNING *`,
+      [product_id, format, headline, body_copy, JSON.stringify(intent_tags || []), cost_per_match || 0.01, daily_budget || 50, total_budget || 500]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error creating ad:', err);
+    res.status(500).json({ error: 'Failed to create ad' });
+  }
 });
 app.put('/api/ads/:id', requireAuth, async (req, res) => {
   const { headline, body_copy, format, cost_per_match, daily_budget, status } = req.body;
@@ -1520,6 +1574,151 @@ app.post('/api/admin/ads/:id/reject', requireAuth, async (req, res) => {
     [req.params.id]
   );
   res.json({ success: true, status: 'rejected', reason });
+});
+
+// ── SELLER APPROVAL QUEUE ─────────────────────────────────────
+
+// Get pending sellers for admin review
+app.get('/api/admin/sellers/pending', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        s.id, s.name, s.email, s.industry, s.location, s.plan,
+        s.email_verified, s.geo_verified, s.is_verified,
+        s.approval_status, s.created_at,
+        gl.geo_match
+      FROM sellers s
+      LEFT JOIN LATERAL (
+        SELECT geo_match FROM seller_geo_log
+        WHERE seller_id = s.id
+        ORDER BY created_at DESC LIMIT 1
+      ) gl ON true
+      WHERE s.approval_status = 'pending_review'
+      ORDER BY s.created_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching pending sellers:', err);
+    res.status(500).json({ error: 'Failed to fetch pending sellers' });
+  }
+});
+
+// Get count of pending sellers (for badge)
+app.get('/api/admin/sellers/pending/count', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) as count FROM sellers WHERE approval_status = 'pending_review'`
+    );
+    res.json({ count: parseInt(rows[0].count, 10) });
+  } catch (err) {
+    console.error('Error fetching pending count:', err);
+    res.status(500).json({ error: 'Failed to fetch pending count' });
+  }
+});
+
+// Approve seller
+app.put('/api/admin/sellers/:id/approve', requireAuth, requireAdmin, emailRateLimiter, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid seller ID' });
+    }
+
+    const result = await pool.query(
+      `UPDATE sellers SET approval_status = 'approved', updated_at = now()
+       WHERE id = $1 RETURNING id, name, email`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const { name, email } = result.rows[0];
+    sendSellerApprovedEmail(email, name);
+
+    res.json({ success: true, approval_status: 'approved' });
+  } catch (err) {
+    console.error('Error approving seller:', err);
+    res.status(500).json({ error: 'Failed to approve seller' });
+  }
+});
+
+// Reject seller
+app.put('/api/admin/sellers/:id/reject', requireAuth, requireAdmin, emailRateLimiter, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid seller ID' });
+    }
+
+    const result = await pool.query(
+      `UPDATE sellers SET approval_status = 'rejected', updated_at = now()
+       WHERE id = $1 RETURNING id, name, email`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const { name, email } = result.rows[0];
+    sendSellerRejectedEmail(email, name);
+
+    res.json({ success: true, approval_status: 'rejected' });
+  } catch (err) {
+    console.error('Error rejecting seller:', err);
+    res.status(500).json({ error: 'Failed to reject seller' });
+  }
+});
+
+// Suspend seller
+app.put('/api/admin/sellers/:id/suspend', requireAuth, requireAdmin, emailRateLimiter, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid seller ID' });
+    }
+
+    const result = await pool.query(
+      `UPDATE sellers SET approval_status = 'suspended', updated_at = now()
+       WHERE id = $1 RETURNING id, name, email`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const { name, email } = result.rows[0];
+    sendSellerSuspendedEmail(email, name);
+
+    res.json({ success: true, approval_status: 'suspended' });
+  } catch (err) {
+    console.error('Error suspending seller:', err);
+    res.status(500).json({ error: 'Failed to suspend seller' });
+  }
+});
+
+// Unsuspend (re-approve) seller
+app.put('/api/admin/sellers/:id/unsuspend', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid seller ID' });
+    }
+
+    const result = await pool.query(
+      `UPDATE sellers SET approval_status = 'approved', updated_at = now()
+       WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    res.json({ success: true, approval_status: 'approved' });
+  } catch (err) {
+    console.error('Error unsuspending seller:', err);
+    res.status(500).json({ error: 'Failed to unsuspend seller' });
+  }
 });
 
 // ── GEO VERIFICATION ROUTES ──────────────────────────────────

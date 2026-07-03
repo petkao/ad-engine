@@ -6,6 +6,9 @@ const FROM = process.env.EMAIL_FROM || 'PinkCurve <onboarding@resend.dev>';
 // TEST_EMAIL override: if set, all emails go to this address instead of real recipients
 const TEST_EMAIL = process.env.TEST_EMAIL || null;
 
+// Admin email for notifications (configurable via env var)
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'support@pinkcurve.com';
+
 function getRecipient(originalEmail) {
     if (TEST_EMAIL) {
         console.log(`[TEST MODE] Redirecting email from ${originalEmail} to ${TEST_EMAIL}`);
@@ -198,4 +201,199 @@ async function sendVerificationEmail(sellerEmail, sellerName, verificationToken)
     }
 }
 
-module.exports = { sendAdApprovedEmail, sendMatchNotificationEmail, sendVerificationEmail, setPool };
+async function sendNewSellerAdminNotification(seller) {
+    try {
+        // Check prompt injection in inputs
+        if (containsPromptInjection(seller.name) || containsPromptInjection(seller.email)) {
+            console.warn(`Blocked admin notification: prompt injection detected`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(seller.name);
+        const safeEmail = sanitizeForEmail(seller.email);
+        const safeIndustry = sanitizeForEmail(seller.industry || 'General');
+        const safeLocation = sanitizeForEmail(seller.location || 'Not provided');
+
+        // In test mode, send to TEST_EMAIL; otherwise to admin email
+        const adminEmail = TEST_EMAIL || ADMIN_EMAIL;
+
+        await resend.emails.send({
+            from: FROM,
+            to: adminEmail,
+            subject: 'New seller registration requires review',
+            html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve Admin</h1>
+          </div>
+          <h2 style="color: #1e293b; margin-bottom: 16px;">New Seller Registration</h2>
+          <p style="color: #475569; line-height: 1.6;">A new seller has registered and requires admin review before they can post ads.</p>
+
+          <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 24px 0;">
+            <h3 style="color: #334155; margin: 0 0 12px 0; font-size: 14px; text-transform: uppercase;">Seller Details</h3>
+            <table style="width: 100%; color: #475569; font-size: 14px;">
+              <tr><td style="padding: 6px 0; font-weight: 600;">Name:</td><td>${safeName}</td></tr>
+              <tr><td style="padding: 6px 0; font-weight: 600;">Email:</td><td>${safeEmail}</td></tr>
+              <tr><td style="padding: 6px 0; font-weight: 600;">Industry:</td><td>${safeIndustry}</td></tr>
+              <tr><td style="padding: 6px 0; font-weight: 600;">Location:</td><td>${safeLocation}</td></tr>
+              <tr><td style="padding: 6px 0; font-weight: 600;">Registered:</td><td>${new Date().toLocaleString()}</td></tr>
+            </table>
+          </div>
+
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="https://ad-engine-4da45.web.app" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #ec4899, #a855f7); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Review in Dashboard</a>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve Admin Notification</p>
+        </div>
+      `,
+        });
+        console.log(`Admin notification sent for new seller: ${seller.email}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send admin notification:', err);
+        return false;
+    }
+}
+
+async function sendSellerApprovedEmail(sellerEmail, sellerName) {
+    try {
+        if (containsPromptInjection(sellerName)) {
+            console.warn(`Blocked approval email to ${sellerEmail}: prompt injection detected`);
+            return false;
+        }
+
+        const allowed = await isAllowedRecipient(sellerEmail);
+        if (!allowed) {
+            console.warn(`Blocked email: ${sellerEmail} not in sellers allowlist`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(sellerName);
+
+        await resend.emails.send({
+            from: FROM,
+            to: getRecipient(sellerEmail),
+            subject: 'Welcome to PinkCurve! Your account is approved',
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve</h1>
+          </div>
+          <h2 style="color: #1e293b; margin-bottom: 16px;">Welcome, ${safeName}!</h2>
+          <p style="color: #475569; line-height: 1.6;">Great news! Your seller account has been approved by our admin team.</p>
+          <p style="color: #475569; line-height: 1.6;">You can now:</p>
+          <ul style="color: #475569; line-height: 1.8;">
+            <li>Create and manage products</li>
+            <li>Launch advertising campaigns</li>
+            <li>Connect with buyers through intent-matching</li>
+          </ul>
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="https://ad-engine-4da45.web.app" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #ec4899, #a855f7); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Go to Dashboard</a>
+          </div>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve — Intent-Powered Advertising</p>
+        </div>
+      `,
+        });
+        console.log(`Approval welcome email sent to ${sellerEmail}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send approval email:', err);
+        return false;
+    }
+}
+
+async function sendSellerRejectedEmail(sellerEmail, sellerName) {
+    try {
+        if (containsPromptInjection(sellerName)) {
+            console.warn(`Blocked rejection email to ${sellerEmail}: prompt injection detected`);
+            return false;
+        }
+
+        const allowed = await isAllowedRecipient(sellerEmail);
+        if (!allowed) {
+            console.warn(`Blocked email: ${sellerEmail} not in sellers allowlist`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(sellerName);
+
+        await resend.emails.send({
+            from: FROM,
+            to: getRecipient(sellerEmail),
+            subject: 'PinkCurve Account Application Update',
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve</h1>
+          </div>
+          <h2 style="color: #1e293b; margin-bottom: 16px;">Hello ${safeName},</h2>
+          <p style="color: #475569; line-height: 1.6;">Thank you for your interest in becoming a seller on PinkCurve.</p>
+          <p style="color: #475569; line-height: 1.6;">After reviewing your application, we're unable to approve your seller account at this time.</p>
+          <p style="color: #475569; line-height: 1.6;">If you believe this was in error or would like more information, please contact our support team.</p>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve — Intent-Powered Advertising</p>
+        </div>
+      `,
+        });
+        console.log(`Rejection email sent to ${sellerEmail}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send rejection email:', err);
+        return false;
+    }
+}
+
+async function sendSellerSuspendedEmail(sellerEmail, sellerName) {
+    try {
+        if (containsPromptInjection(sellerName)) {
+            console.warn(`Blocked suspension email to ${sellerEmail}: prompt injection detected`);
+            return false;
+        }
+
+        const allowed = await isAllowedRecipient(sellerEmail);
+        if (!allowed) {
+            console.warn(`Blocked email: ${sellerEmail} not in sellers allowlist`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(sellerName);
+
+        await resend.emails.send({
+            from: FROM,
+            to: getRecipient(sellerEmail),
+            subject: 'PinkCurve Account Suspended',
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve</h1>
+          </div>
+          <h2 style="color: #1e293b; margin-bottom: 16px;">Hello ${safeName},</h2>
+          <p style="color: #475569; line-height: 1.6;">Your PinkCurve seller account has been suspended.</p>
+          <p style="color: #475569; line-height: 1.6;">While suspended, you will not be able to create new ads or campaigns.</p>
+          <p style="color: #475569; line-height: 1.6;">If you believe this was in error or would like more information, please contact our support team.</p>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve — Intent-Powered Advertising</p>
+        </div>
+      `,
+        });
+        console.log(`Suspension email sent to ${sellerEmail}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send suspension email:', err);
+        return false;
+    }
+}
+
+module.exports = {
+    sendAdApprovedEmail,
+    sendMatchNotificationEmail,
+    sendVerificationEmail,
+    sendNewSellerAdminNotification,
+    sendSellerApprovedEmail,
+    sendSellerRejectedEmail,
+    sendSellerSuspendedEmail,
+    setPool
+};

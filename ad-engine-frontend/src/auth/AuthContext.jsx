@@ -19,17 +19,17 @@ export function AuthProvider({ children }) {
   });
 
   useEffect(() => {
-    const token = getToken();
-    const savedUser = localStorage.getItem('auth_user');
-    if (token && savedUser) {
-      setUser(JSON.parse(savedUser));
-      setLoading(false);
-    } else {
-      authFetch(`${BASE}/auth/me`)
-        .then(r => r.ok ? r.json() : null)
-        .then(data => { if (data?.user) setUser(data.user); })
-        .finally(() => setLoading(false));
-    }
+    // Always validate token with server on load
+    authFetch(`${BASE}/auth/me`)
+      .then(r => {
+        if (r.ok) return r.json();
+        // Token invalid - clear localStorage
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        return null;
+      })
+      .then(data => { if (data?.user) setUser(data.user); })
+      .finally(() => setLoading(false));
   }, []);
 
   const login = async (email, password) => {

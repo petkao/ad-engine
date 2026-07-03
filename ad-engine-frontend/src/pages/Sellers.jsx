@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import {
-  PageHeader, Button, Badge, Table, SearchBar, Spinner,
+  PageHeader, Button, Badge, SearchBar, Spinner,
   Modal, Field, Input, Select
 } from '../components/UI';
 
@@ -87,20 +87,6 @@ export default function Sellers() {
     s.industry.toLowerCase().includes(search.toLowerCase())
   );
 
-  const columns = [
-    { key: 'name', label: 'Company' },
-    { key: 'email', label: 'Email', render: v => <span className="text-slate-500 text-xs">{v}</span> },
-    { key: 'industry', label: 'Industry', render: v => <Badge>{v}</Badge> },
-    { key: 'plan', label: 'Plan', render: v => <Badge variant={v}>{v}</Badge> },
-    { key: 'balance', label: 'Balance', render: v => <span className="font-mono text-green-700">${parseFloat(v).toFixed(2)}</span> },
-    { key: 'status', label: 'Status', render: v => <Badge variant={v}>{v}</Badge> },
-    { key: 'location', label: 'Location', render: v => v ? <span className="text-xs text-slate-500">📍 {v}</span> : <span className="text-xs text-slate-300">Not set</span> },
-    { key: 'is_verified', label: 'Verified', sortable: false, render: (v, row) => (v || row.geo_verified)
-      ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">✅ Verified</span>
-      : <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Unverified</span>
-    },
-  ];
-
   return (
     <div>
       <PageHeader
@@ -109,12 +95,62 @@ export default function Sellers() {
         action={<Button onClick={() => setModal('create')}>+ Add Seller</Button>}
       />
 
-      <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-100">
         <div className="p-4 border-b border-slate-100">
           <SearchBar value={search} onChange={setSearch} placeholder="Search by name, email, or industry..." />
         </div>
         {loading ? <Spinner /> : (
-          <Table columns={columns} data={filtered} onEdit={setModal} onDelete={handleDelete} />
+          <div style={{ overflowX: 'auto', width: '100%' }}>
+            <table className="w-full text-sm" style={{ minWidth: '800px' }}>
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Company</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Email</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Plan</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Balance</th>
+                  <th className="text-left py-3 px-4 text-xs font-semibold text-slate-400 uppercase">Verified</th>
+                  <th className="text-right py-3 px-4 text-xs font-semibold text-slate-400 uppercase" style={{ position: 'sticky', right: 0, background: 'white' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(seller => (
+                  <tr key={seller.id} className="border-b border-slate-50 hover:bg-slate-50">
+                    <td className="py-3 px-4 text-slate-700 font-medium">{seller.name}</td>
+                    <td className="py-3 px-4 text-slate-500 text-sm">{seller.email}</td>
+                    <td className="py-3 px-4"><Badge variant={seller.plan}>{seller.plan}</Badge></td>
+                    <td className="py-3 px-4 font-mono text-green-700">${parseFloat(seller.balance || 0).toFixed(2)}</td>
+                    <td className="py-3 px-4">
+                      {seller.email_verified && seller.geo_verified ? (
+                        <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">✅ Verified</span>
+                      ) : seller.geo_verified ? (
+                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">📧 Email</span>
+                      ) : seller.email_verified ? (
+                        <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">📍 Geo</span>
+                      ) : (
+                        <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">⏳ Pending</span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 text-right" style={{ position: 'sticky', right: 0, background: 'white' }}>
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => setModal(seller)}
+                          className="px-3 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 rounded-md"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(seller.id)}
+                          className="px-3 py-1.5 text-xs bg-red-100 text-red-700 hover:bg-red-200 rounded-md"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

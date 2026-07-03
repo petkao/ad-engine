@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
+import { api } from './api/client';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Sellers from './pages/Sellers';
@@ -8,8 +9,10 @@ import Ads from './pages/Ads';
 import Buyers from './pages/Buyers';
 import Analytics from './pages/Analytics';
 import GeoVerification from './pages/GeoVerification';
+import AdEventLog from './pages/AdEventLog';
 import BuyerSearch from './pages/BuyerSearch';
 import BuyerLanding from './pages/BuyerLanding';
+import VerifyEmail from './pages/VerifyEmail';
 
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
@@ -18,24 +21,72 @@ const ALL_NAV = [
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
   { id: 'buyers', label: 'Buyers', icon: '👥', roles: ['admin'] },
+  { id: 'events', label: 'Ad Event Log', icon: '📋', roles: ['admin'] },
   { id: 'geo', label: 'Geo Verification', icon: '📍', roles: ['admin'] },
 ];
 
 const PAGES = {
   dashboard: Dashboard, analytics: Analytics,
   sellers: Sellers, products: Products,
-  ads: Ads, buyers: Buyers, geo: GeoVerification,
+  ads: Ads, buyers: Buyers, events: AdEventLog, geo: GeoVerification,
 };
+
+function EmailVerificationBanner({ onResend }) {
+  const [resending, setResending] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const handleResend = async () => {
+    setResending(true);
+    setMessage('');
+    try {
+      const result = await api.resendVerification();
+      setMessage(result.message || 'Verification email sent!');
+    } catch (err) {
+      setMessage(err.message || 'Failed to send. Try again later.');
+    } finally {
+      setResending(false);
+    }
+  };
+
+  return (
+    <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+      <div className="flex items-center justify-between max-w-6xl mx-auto">
+        <div className="flex items-center gap-2">
+          <span className="text-amber-600 text-lg">&#x26A0;&#xFE0F;</span>
+          <span className="text-amber-800 text-sm font-medium">
+            Please verify your email address to fully activate your account.
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {message && (
+            <span className={`text-xs ${message.includes('sent') ? 'text-green-600' : 'text-red-600'}`}>
+              {message}
+            </span>
+          )}
+          <button
+            onClick={handleResend}
+            disabled={resending}
+            className="text-sm font-medium text-amber-700 hover:text-amber-900 underline disabled:opacity-50"
+          >
+            {resending ? 'Sending...' : 'Resend verification email'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AppShell() {
   const { user, loading, logout } = useAuth();
   const [page, setPage] = useState('dashboard');
   const [buyerMode, setBuyerMode] = useState(false);
 
-  // Check if this is the public buyer search URL
+  // Check if this is a public page
   const isSearchPage = window.location.pathname === '/search';
+  const isVerifyEmailPage = window.location.pathname === '/verify-email';
 
   if (isSearchPage) return <BuyerLanding />;
+  if (isVerifyEmailPage) return <VerifyEmail />;
 
   if (loading) return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -64,9 +115,12 @@ function AppShell() {
   );
 
   const Page = PAGES[page];
+  const showEmailBanner = user.email_verified === false && user.role !== 'admin';
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
+    <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
+      {showEmailBanner && <EmailVerificationBanner />}
+      <div className="flex flex-1 overflow-hidden">
       <aside className="w-56 bg-white border-r border-slate-100 flex flex-col shrink-0">
         <div className="px-5 py-6 border-b border-slate-100">
           <div className="text-lg font-bold" style={{ fontFamily: '"DM Serif Display", serif', background: 'linear-gradient(135deg, #ec4899, #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PinkCurve</div>
@@ -110,6 +164,7 @@ function AppShell() {
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto px-8 py-8"><Page /></div>
       </main>
+      </div>
     </div>
   );
 }

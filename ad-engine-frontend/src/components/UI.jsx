@@ -119,6 +119,9 @@ export function Table({ columns, data, onEdit, onDelete }) {
   const [sortKey, setSortKey]   = useState(null);
   const [sortDir, setSortDir]   = useState('asc');
 
+  // Check if columns already includes an actions column
+  const hasActionsColumn = columns.some(c => c.key === 'actions');
+
   const handleSort = (key) => {
     if (sortKey === key) {
       setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -174,7 +177,9 @@ export function Table({ columns, data, onEdit, onDelete }) {
                 </span>
               </th>
             ))}
-            <th className="text-right py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wide">Actions</th>
+            {!hasActionsColumn && (onEdit || onDelete) && (
+              <th className="text-right py-3 px-4 text-xs font-semibold text-slate-400 uppercase tracking-wide">Actions</th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -185,12 +190,14 @@ export function Table({ columns, data, onEdit, onDelete }) {
                   {c.render ? c.render(row[c.key], row) : row[c.key]}
                 </td>
               ))}
-              <td className="py-3 px-4 text-right">
-                <div className="flex items-center justify-end gap-2">
-                  {onEdit && <Button variant="ghost" size="sm" onClick={() => onEdit(row)}>✏️ Edit</Button>}
-                  {onDelete && <Button variant="danger" size="sm" onClick={() => onDelete(row.id)}>🗑️</Button>}
-                </div>
-              </td>
+              {!hasActionsColumn && (onEdit || onDelete) && (
+                <td className="py-3 px-4 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    {onEdit && <Button variant="ghost" size="sm" onClick={() => onEdit(row)}>✏️ Edit</Button>}
+                    {onDelete && <Button variant="danger" size="sm" onClick={() => onDelete(row.id)}>🗑️ Delete</Button>}
+                  </div>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

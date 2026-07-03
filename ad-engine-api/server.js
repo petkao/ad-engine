@@ -1,5 +1,6 @@
 require('dotenv').config();
-const { sendAdApprovedEmail, sendMatchNotificationEmail, setPool } = require('./emailService');
+const { sendAdApprovedEmail, sendMatchNotificationEmail, sendVerificationEmail, setPool } = require('./emailService');
+const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
@@ -128,13 +129,49 @@ function ensureBillingSupportTicketsTable() {
   return billingSupportTicketsTableReady;
 }
 
-// ── GEO LOGGING ───────────────────────────────────────────────
+// ── GEO LOGGING & AD EVENTS ───────────────────────────────────
 
 let geoLogTablesReady;
 
 function ensureGeoLogTables() {
   if (!geoLogTablesReady) {
     geoLogTablesReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS ad_events (
+        id SERIAL PRIMARY KEY,
+        event_type VARCHAR(20) NOT NULL,
+        ad_id UUID,
+        seller_id UUID,
+        buyer_session_id VARCHAR(255),
+        buyer_ip VARCHAR(45),
+        buyer_city VARCHAR(100),
+        buyer_state VARCHAR(100),
+        buyer_country VARCHAR(100),
+        user_agent TEXT,
+        referrer TEXT,
+        timestamp TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Fix ad_id column if it was created as INTEGER
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'ad_events' AND column_name = 'ad_id' AND data_type = 'integer'
+        ) THEN
+          ALTER TABLE ad_events DROP COLUMN ad_id;
+          ALTER TABLE ad_events ADD COLUMN ad_id UUID;
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_ad_events_timestamp
+        ON ad_events (timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_ad_events_ad_id
+        ON ad_events (ad_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_ad_events_seller_id
+        ON ad_events (seller_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_ad_events_type
+        ON ad_events (event_type, timestamp DESC);
+
       CREATE TABLE IF NOT EXISTS seller_geo_log (
         id SERIAL PRIMARY KEY,
         seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
@@ -166,6 +203,11 @@ function ensureGeoLogTables() {
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS location VARCHAR(255);
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false;
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS geo_verified BOOLEAN DEFAULT false;
+
+      -- Add email verification columns to sellers table
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false;
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR(255);
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS email_verification_expires TIMESTAMPTZ;
     `).catch((err) => {
       geoLogTablesReady = undefined;
       console.error('Failed to create geo log tables:', err.message);
@@ -253,6 +295,42 @@ async function logBuyerGeo(sessionId, req) {
     console.log(`Logged buyer geo: ${sessionId} from ${ip} (${geo.city}, ${geo.state}, ${geo.country})`);
   } catch (err) {
     console.error('Failed to log buyer geo:', err.message);
+  }
+}
+
+/**
+ * Log ad event (impression or click) with full geo and request context
+ * @param {string} eventType - 'impression' or 'click'
+ * @param {object} params - Event parameters
+ * @param {Request} req - Express request object
+ */
+async function logAdEvent(eventType, params, req) {
+  try {
+    await ensureGeoLogTables();
+    const ip = getClientIp(req);
+    const geo = resolveGeo(ip);
+    const userAgent = req.headers['user-agent'] || null;
+    const referrer = req.headers['referer'] || req.headers['referrer'] || null;
+
+    await pool.query(
+      `INSERT INTO ad_events (event_type, ad_id, seller_id, buyer_session_id, buyer_ip, buyer_city, buyer_state, buyer_country, user_agent, referrer, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+      [
+        eventType,
+        params.adId || null,
+        params.sellerId || null,
+        params.sessionId || null,
+        ip,
+        geo.city || null,
+        geo.state || null,
+        geo.country || null,
+        userAgent,
+        referrer
+      ]
+    );
+    console.log(`Ad event logged: ${eventType} for ad ${params.adId || 'N/A'} from ${ip} (${geo.city || 'unknown'})`);
+  } catch (err) {
+    console.error('Failed to log ad event:', err.message);
   }
 }
 
@@ -403,13 +481,21 @@ app.post('/auth/register', async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   try {
+    // Ensure email verification columns exist
+    await ensureGeoLogTables();
+
     const existing = await pool.query('SELECT id FROM seller_accounts WHERE email=$1', [email]);
     if (existing.rows.length) return res.status(409).json({ error: 'An account with this email already exists.' });
+
+    // Generate email verification token
+    const verificationToken = crypto.randomUUID();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
     const hash = await bcrypt.hash(password, 12);
     const sellerRes = await pool.query(
-      `INSERT INTO sellers (id,name,email,industry,location,plan,balance,contact_info,status,created_at,updated_at)
-       VALUES (uuid_generate_v4(),$1,$2,$3,$4,'starter',0,'{}','active',now(),now()) RETURNING *`,
-      [name, email, industry || 'General', location || null]
+      `INSERT INTO sellers (id,name,email,industry,location,plan,balance,contact_info,status,email_verified,email_verification_token,email_verification_expires,created_at,updated_at)
+       VALUES (uuid_generate_v4(),$1,$2,$3,$4,'starter',0,'{}','active',false,$5,$6,now(),now()) RETURNING *`,
+      [name, email, industry || 'General', location || null, verificationToken, verificationExpires]
     );
     const accountRes = await pool.query(
       `INSERT INTO seller_accounts (id,seller_id,email,password_hash,role,is_verified,created_at,updated_at)
@@ -420,21 +506,52 @@ app.post('/auth/register', async (req, res) => {
     // Log seller geolocation on registration (pass claimed location for comparison)
     logSellerGeo(sellerRes.rows[0].id, req, location || null);
 
+    // Send verification email
+    sendVerificationEmail(email, name, verificationToken);
+
     req.login(accountRes.rows[0], (err) => {
       if (err) return res.status(500).json({ error: 'Login after register failed.' });
-      res.json({ success: true, user: safeUser(accountRes.rows[0]), seller: sellerRes.rows[0] });
+      res.json({
+        success: true,
+        user: safeUser(accountRes.rows[0]),
+        seller: sellerRes.rows[0],
+        message: 'Please check your email to verify your account.'
+      });
     });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Registration failed.' }); }
 });
 
 app.post('/auth/login', (req, res, next) => {
-  passport.authenticate('local', (err, user, info) => {
+  passport.authenticate('local', async (err, user, info) => {
     if (err) return res.status(500).json({ error: 'Login error.' });
     if (!user) return res.status(401).json({ error: info?.message || 'Invalid credentials.' });
-    req.login(user, (err) => {
-      if (err) return res.status(500).json({ error: 'Session error.' });
+    req.login(user, async (loginErr) => {
+      if (loginErr) return res.status(500).json({ error: 'Session error.' });
       const token = generateToken(user);
-      res.json({ success: true, user: safeUser(user), token });
+      const safeUserObj = safeUser(user);
+
+      // Look up seller's email_verified status
+      let emailVerified = true; // Default for admin accounts
+      if (user.seller_id) {
+        try {
+          const sellerRes = await pool.query(
+            'SELECT email_verified FROM sellers WHERE id = $1',
+            [user.seller_id]
+          );
+          if (sellerRes.rows.length) {
+            emailVerified = sellerRes.rows[0].email_verified === true;
+          }
+        } catch (e) {
+          console.error('Failed to check email_verified:', e);
+        }
+      }
+
+      res.json({
+        success: true,
+        user: { ...safeUserObj, email_verified: emailVerified },
+        token,
+        email_verified: emailVerified
+      });
     });
   })(req, res, next);
 });
@@ -443,8 +560,141 @@ app.post('/auth/logout', (req, res) => {
   req.logout(() => { req.session.destroy(); res.json({ success: true }); });
 });
 
-app.get('/auth/me', (req, res) => {
-  if (req.isAuthenticated()) return res.json({ user: safeUser(req.user) });
+// ── EMAIL VERIFICATION ROUTES ────────────────────────────────────
+app.get('/auth/verify-email', async (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ error: 'Verification token is required.' });
+
+  try {
+    await ensureGeoLogTables(); // Ensure columns exist
+
+    const result = await pool.query(
+      `SELECT id, name, email_verified, email_verification_expires, geo_verified
+       FROM sellers WHERE email_verification_token = $1`,
+      [token]
+    );
+
+    if (!result.rows.length) {
+      return res.status(400).json({ error: 'Invalid or expired verification link.' });
+    }
+
+    const seller = result.rows[0];
+
+    if (seller.email_verified) {
+      return res.json({ success: true, seller_name: seller.name, message: 'Email already verified.' });
+    }
+
+    if (new Date(seller.email_verification_expires) < new Date()) {
+      return res.status(400).json({ error: 'Verification link has expired. Please request a new one.' });
+    }
+
+    // Update seller: set email_verified = true, clear token, update is_verified if geo_verified
+    const isFullyVerified = seller.geo_verified === true;
+    await pool.query(
+      `UPDATE sellers SET
+         email_verified = true,
+         email_verification_token = NULL,
+         email_verification_expires = NULL,
+         is_verified = $2,
+         updated_at = NOW()
+       WHERE id = $1`,
+      [seller.id, isFullyVerified]
+    );
+
+    res.json({
+      success: true,
+      seller_name: seller.name,
+      is_verified: isFullyVerified,
+      message: isFullyVerified
+        ? 'Email verified! Your account is now fully verified.'
+        : 'Email verified! Complete geo verification to fully verify your account.'
+    });
+  } catch (err) {
+    console.error('Email verification error:', err);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// Rate limiter for resend verification (3 per hour)
+const resendVerificationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3,
+  message: { error: 'Too many verification requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.post('/auth/resend-verification', requireAuth, resendVerificationLimiter, async (req, res) => {
+  try {
+    await ensureGeoLogTables();
+
+    const sellerId = req.user?.seller_id;
+    if (!sellerId) {
+      return res.status(400).json({ error: 'No seller account found.' });
+    }
+
+    const sellerRes = await pool.query(
+      'SELECT id, name, email, email_verified FROM sellers WHERE id = $1',
+      [sellerId]
+    );
+
+    if (!sellerRes.rows.length) {
+      return res.status(404).json({ error: 'Seller not found.' });
+    }
+
+    const seller = sellerRes.rows[0];
+
+    if (seller.email_verified) {
+      return res.json({ success: true, message: 'Email is already verified.' });
+    }
+
+    // Generate new token
+    const verificationToken = crypto.randomUUID();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await pool.query(
+      `UPDATE sellers SET
+         email_verification_token = $2,
+         email_verification_expires = $3,
+         updated_at = NOW()
+       WHERE id = $1`,
+      [seller.id, verificationToken, verificationExpires]
+    );
+
+    // Send verification email
+    const sent = await sendVerificationEmail(seller.email, seller.name, verificationToken);
+
+    if (sent) {
+      res.json({ success: true, message: 'Verification email sent. Please check your inbox.' });
+    } else {
+      res.status(500).json({ error: 'Failed to send verification email.' });
+    }
+  } catch (err) {
+    console.error('Resend verification error:', err);
+    res.status(500).json({ error: 'Failed to resend verification email.' });
+  }
+});
+
+app.get('/auth/me', async (req, res) => {
+  // Helper to add email_verified to user object
+  async function addEmailVerified(user) {
+    if (!user.seller_id) return { ...user, email_verified: true };
+    try {
+      const sellerRes = await pool.query(
+        'SELECT email_verified FROM sellers WHERE id = $1',
+        [user.seller_id]
+      );
+      const emailVerified = sellerRes.rows.length ? sellerRes.rows[0].email_verified === true : true;
+      return { ...user, email_verified: emailVerified };
+    } catch {
+      return { ...user, email_verified: true };
+    }
+  }
+
+  if (req.isAuthenticated()) {
+    const userWithEmail = await addEmailVerified(safeUser(req.user));
+    return res.json({ user: userWithEmail });
+  }
 
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -457,7 +707,8 @@ app.get('/auth/me', (req, res) => {
 
     try {
       const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'ad-engine-secret-key');
-      return res.json({ user: decoded });
+      const userWithEmail = await addEmailVerified(decoded);
+      return res.json({ user: userWithEmail });
     } catch {
       return res.status(401).json({ error: 'Invalid token' });
     }
@@ -594,10 +845,39 @@ app.put('/api/sellers/:id', requireAuth, async (req, res) => {
   );
   res.json(rows[0]);
 });
-app.delete('/api/sellers/:id', requireAuth, async (req, res) => {
-  await pool.query('DELETE FROM ad_embeddings WHERE ad_id=$1', [req.params.id]);
-  await pool.query('DELETE FROM ads WHERE id=$1', [req.params.id]);
-  res.json({ success: true });
+app.delete('/api/sellers/:id', requireAuth, requireAdmin, async (req, res) => {
+  const sellerId = req.params.id;
+  try {
+    // Get all product IDs for this seller
+    const productsRes = await pool.query('SELECT id FROM products WHERE seller_id = $1', [sellerId]);
+    const productIds = productsRes.rows.map(r => r.id);
+
+    if (productIds.length > 0) {
+      // Get all ad IDs for those products
+      const adsRes = await pool.query('SELECT id FROM ads WHERE product_id = ANY($1)', [productIds]);
+      const adIds = adsRes.rows.map(r => r.id);
+
+      if (adIds.length > 0) {
+        // Delete ad_embeddings for those ads
+        await pool.query('DELETE FROM ad_embeddings WHERE ad_id = ANY($1)', [adIds]);
+        // Delete ad_matches for those ads
+        await pool.query('DELETE FROM ad_matches WHERE ad_id = ANY($1)', [adIds]);
+        // Delete ads
+        await pool.query('DELETE FROM ads WHERE id = ANY($1)', [adIds]);
+      }
+
+      // Delete products
+      await pool.query('DELETE FROM products WHERE id = ANY($1)', [productIds]);
+    }
+
+    // Delete seller (cascades to seller_geo_log, billing_support_tickets, seller_accounts)
+    await pool.query('DELETE FROM sellers WHERE id = $1', [sellerId]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting seller:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/products', requireAuth, async (req, res) => {
@@ -1244,6 +1524,73 @@ app.post('/api/admin/ads/:id/reject', requireAuth, async (req, res) => {
 
 // ── GEO VERIFICATION ROUTES ──────────────────────────────────
 
+// Admin: Get ad events (impressions and clicks)
+app.get('/api/admin/ad-events', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { event_type, ad_id, seller_id, start_date, end_date, limit = 500 } = req.query;
+
+    let sql = `
+      SELECT
+        ae.id,
+        ae.event_type,
+        ae.ad_id,
+        a.headline as ad_title,
+        ae.seller_id,
+        s.name as seller_name,
+        ae.buyer_session_id,
+        b.device_id as buyer_device_id,
+        ae.buyer_ip,
+        ae.buyer_city,
+        ae.buyer_state,
+        ae.buyer_country,
+        ae.user_agent,
+        ae.referrer,
+        ae.timestamp
+      FROM ad_events ae
+      LEFT JOIN ads a ON ae.ad_id = a.id
+      LEFT JOIN sellers s ON ae.seller_id = s.id
+      LEFT JOIN buyer_sessions bs ON ae.buyer_session_id = bs.id::text
+      LEFT JOIN buyers b ON bs.buyer_id = b.id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (event_type && event_type !== 'all') {
+      params.push(event_type);
+      sql += ` AND ae.event_type = $${params.length}`;
+    }
+
+    if (ad_id) {
+      params.push(ad_id);
+      sql += ` AND ae.ad_id = $${params.length}`;
+    }
+
+    if (seller_id) {
+      params.push(seller_id);
+      sql += ` AND ae.seller_id = $${params.length}`;
+    }
+
+    if (start_date) {
+      params.push(start_date);
+      sql += ` AND ae.timestamp >= $${params.length}`;
+    }
+
+    if (end_date) {
+      params.push(end_date);
+      sql += ` AND ae.timestamp <= $${params.length}`;
+    }
+
+    params.push(parseInt(limit) || 500);
+    sql += ` ORDER BY ae.timestamp DESC LIMIT $${params.length}`;
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching ad events:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin: Get seller geo logs with seller info
 app.get('/api/admin/seller-geo-logs', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -1747,7 +2094,7 @@ No explanation, just the JSON array.`;
         `, [buyerId, query || category]);
         const sessionId = sessionRes.rows[0].id;
 
-        // Log matches
+        // Log matches and impressions
         for (const match of matches) {
           await pool.query(`
             INSERT INTO ad_matches (id, buyer_id, session_id, ad_id, relevance_score, rank_position, status, matched_at)
@@ -1758,6 +2105,13 @@ No explanation, just the JSON array.`;
           await pool.query(`
             UPDATE ads SET spent = spent + cost_per_match WHERE id = $1
           `, [match.id]);
+
+          // Log impression event to ad_events
+          logAdEvent('impression', {
+            adId: match.id,
+            sellerId: null, // Will be looked up in logAdEvent if needed
+            sessionId: sessionId
+          }, req);
         }
       } catch (logErr) {
         console.error('Match logging error:', logErr.message);
@@ -1776,6 +2130,7 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
   const { match_id, ad_id, session_id } = req.body;
   try {
     let sessionIdForGeo = session_id || null;
+    let sellerId = null;
 
     if (match_id) {
       // Get session_id from match and update status
@@ -1796,7 +2151,7 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
     if (ad_id) {
       try {
         const result = await pool.query(
-          `SELECT p.title, s.email, s.name
+          `SELECT p.title, s.email, s.name, s.id as seller_id
            FROM ads a
            JOIN products p ON a.product_id = p.id
            JOIN sellers s ON p.seller_id = s.id
@@ -1804,7 +2159,8 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
           [ad_id]
         );
         if (result.rows[0]) {
-          const { title, email, name } = result.rows[0];
+          const { title, email, name, seller_id } = result.rows[0];
+          sellerId = seller_id;
           // Sanitize inputs before sending email
           const sanitizedTitle = sanitizeForEmail(title);
           const sanitizedName = sanitizeForEmail(name);
@@ -1813,6 +2169,13 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
       } catch (emailErr) {
         console.error('Could not send click email:', emailErr);
       }
+
+      // Log click event to ad_events
+      logAdEvent('click', {
+        adId: ad_id,
+        sellerId,
+        sessionId: sessionIdForGeo
+      }, req);
     }
 
     res.json({ success: true });

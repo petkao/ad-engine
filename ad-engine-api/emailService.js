@@ -3,6 +3,17 @@ const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.EMAIL_FROM || 'PinkCurve <onboarding@resend.dev>';
 
+// TEST_EMAIL override: if set, all emails go to this address instead of real recipients
+const TEST_EMAIL = process.env.TEST_EMAIL || null;
+
+function getRecipient(originalEmail) {
+    if (TEST_EMAIL) {
+        console.log(`[TEST MODE] Redirecting email from ${originalEmail} to ${TEST_EMAIL}`);
+        return TEST_EMAIL;
+    }
+    return originalEmail;
+}
+
 // Database pool for allowlist verification
 let pool = null;
 
@@ -92,7 +103,7 @@ async function sendAdApprovedEmail(sellerEmail, sellerName, adTitle) {
 
         await resend.emails.send({
             from: FROM,
-            to: sellerEmail,
+            to: getRecipient(sellerEmail),
             subject: `Your ad "${safeTitle}" is live on PinkCurve!`,
             html: `
         <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
@@ -130,7 +141,7 @@ async function sendMatchNotificationEmail(sellerEmail, sellerName, adTitle, matc
 
         await resend.emails.send({
             from: FROM,
-            to: sellerEmail,
+            to: getRecipient(sellerEmail),
             subject: `New activity on "${safeTitle}"`,
             html: `
         <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
@@ -146,4 +157,45 @@ async function sendMatchNotificationEmail(sellerEmail, sellerName, adTitle, matc
     }
 }
 
-module.exports = { sendAdApprovedEmail, sendMatchNotificationEmail, setPool };
+async function sendVerificationEmail(sellerEmail, sellerName, verificationToken) {
+    try {
+        // Check prompt injection in inputs
+        if (containsPromptInjection(sellerName)) {
+            console.warn(`Blocked verification email to ${sellerEmail}: prompt injection detected`);
+            return false;
+        }
+
+        // Sanitize inputs for email content
+        const safeName = sanitizeForEmail(sellerName);
+        const verifyUrl = `https://ad-engine-4da45.web.app/verify-email?token=${verificationToken}`;
+
+        await resend.emails.send({
+            from: FROM,
+            to: getRecipient(sellerEmail),
+            subject: 'Verify your PinkCurve seller account',
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve</h1>
+          </div>
+          <h2 style="color: #1e293b; margin-bottom: 16px;">Welcome, ${safeName}!</h2>
+          <p style="color: #475569; line-height: 1.6;">Thanks for registering as a seller on PinkCurve. Please verify your email address to activate your account.</p>
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${verifyUrl}" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #ec4899, #a855f7); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Verify Email</a>
+          </div>
+          <p style="color: #64748b; font-size: 14px;">This link expires in 24 hours.</p>
+          <p style="color: #64748b; font-size: 14px;">If you didn't create this account, you can safely ignore this email.</p>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve — Intent-Powered Advertising</p>
+        </div>
+      `,
+        });
+        console.log(`Verification email sent to ${sellerEmail}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send verification email:', err);
+        return false;
+    }
+}
+
+module.exports = { sendAdApprovedEmail, sendMatchNotificationEmail, sendVerificationEmail, setPool };

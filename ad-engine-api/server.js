@@ -1627,169 +1627,221 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
 
 // Platform overview stats
 app.get('/api/analytics/overview', requireAuth, async (req, res) => {
-  const { start, end } = req.query;
-  const dateFilter = start && end
-    ? `WHERE created_at BETWEEN '${start}' AND '${end}'`
-    : `WHERE created_at >= now() - interval '30 days'`;
+  try {
+    const { start, end } = req.query;
+    // Use parameterized queries to prevent SQL injection
+    const useCustomRange = start && end;
 
-  const [sellers, products, ads, buyers, revenue, matches] = await Promise.all([
-    pool.query(`SELECT COUNT(*) FROM sellers ${dateFilter}`),
-    pool.query(`SELECT COUNT(*) FROM products ${dateFilter}`),
-    pool.query(`SELECT COUNT(*) FROM ads ${dateFilter}`),
-    pool.query(`SELECT COUNT(*) FROM buyers ${dateFilter}`),
-    pool.query(`SELECT COALESCE(SUM(spent),0) as total FROM ads`),
-    // pool.query(`SELECT COUNT(*) FROM ad_matches ${dateFilter}`),
-    pool.query(`SELECT COUNT(*) FROM ad_matches ${dateFilter.replace('created_at', 'matched_at')}`)
+    const [sellers, products, ads, buyers, revenue, matches] = await Promise.all([
+      useCustomRange
+        ? pool.query(`SELECT COUNT(*) FROM sellers WHERE created_at BETWEEN $1 AND $2`, [start, end])
+        : pool.query(`SELECT COUNT(*) FROM sellers WHERE created_at >= now() - interval '30 days'`),
+      useCustomRange
+        ? pool.query(`SELECT COUNT(*) FROM products WHERE created_at BETWEEN $1 AND $2`, [start, end])
+        : pool.query(`SELECT COUNT(*) FROM products WHERE created_at >= now() - interval '30 days'`),
+      useCustomRange
+        ? pool.query(`SELECT COUNT(*) FROM ads WHERE created_at BETWEEN $1 AND $2`, [start, end])
+        : pool.query(`SELECT COUNT(*) FROM ads WHERE created_at >= now() - interval '30 days'`),
+      useCustomRange
+        ? pool.query(`SELECT COUNT(*) FROM buyers WHERE created_at BETWEEN $1 AND $2`, [start, end])
+        : pool.query(`SELECT COUNT(*) FROM buyers WHERE created_at >= now() - interval '30 days'`),
+      pool.query(`SELECT COALESCE(SUM(spent),0) as total FROM ads`),
+      useCustomRange
+        ? pool.query(`SELECT COUNT(*) FROM ad_matches WHERE matched_at BETWEEN $1 AND $2`, [start, end])
+        : pool.query(`SELECT COUNT(*) FROM ad_matches WHERE matched_at >= now() - interval '30 days'`),
+    ]);
 
-  ]);
-
-  res.json({
-    sellers: parseInt(sellers.rows[0].count),
-    products: parseInt(products.rows[0].count),
-    ads: parseInt(ads.rows[0].count),
-    buyers: parseInt(buyers.rows[0].count),
-    revenue: parseFloat(revenue.rows[0].total),
-    matches: parseInt(matches.rows[0].count),
-  });
+    res.json({
+      sellers: parseInt(sellers.rows[0].count),
+      products: parseInt(products.rows[0].count),
+      ads: parseInt(ads.rows[0].count),
+      buyers: parseInt(buyers.rows[0].count),
+      revenue: parseFloat(revenue.rows[0].total),
+      matches: parseInt(matches.rows[0].count),
+    });
+  } catch (err) {
+    console.error('Analytics overview error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Daily spend trend (line chart)
 app.get('/api/analytics/spend-trend', requireAuth, async (req, res) => {
-  const { start, end } = req.query;
-  const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const endDate = end || new Date().toISOString().split('T')[0];
+  try {
+    const { start, end } = req.query;
+    const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const endDate = end || new Date().toISOString().split('T')[0];
 
-  const { rows } = await pool.query(`
-    SELECT 
-      date_trunc('day', updated_at)::date as date,
-      SUM(spent) as total_spent,
-      COUNT(*) as ad_count
-    FROM ads
-    WHERE updated_at BETWEEN $1 AND $2::date + interval '1 day'
-    GROUP BY date_trunc('day', updated_at)::date
-    ORDER BY date ASC
-  `, [startDate, endDate]);
+    const { rows } = await pool.query(`
+      SELECT
+        date_trunc('day', updated_at)::date as date,
+        SUM(spent) as total_spent,
+        COUNT(*) as ad_count
+      FROM ads
+      WHERE updated_at BETWEEN $1 AND $2::date + interval '1 day'
+      GROUP BY date_trunc('day', updated_at)::date
+      ORDER BY date ASC
+    `, [startDate, endDate]);
 
-  res.json(rows);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics spend-trend error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Top sellers by spend (bar chart)
 app.get('/api/analytics/top-sellers', requireAuth, async (req, res) => {
-  const { start, end, limit = 10 } = req.query;
-  const { rows } = await pool.query(`
-    SELECT 
-      s.name as seller_name,
-      s.industry,
-      COUNT(a.id) as ad_count,
-      COALESCE(SUM(a.spent), 0) as total_spent,
-      COALESCE(SUM(a.daily_budget), 0) as total_budget
-    FROM sellers s
-    LEFT JOIN products p ON p.seller_id = s.id
-    LEFT JOIN ads a ON a.product_id = p.id
-    GROUP BY s.id, s.name, s.industry
-    ORDER BY total_spent DESC
-    LIMIT $1
-  `, [limit]);
-  res.json(rows);
+  try {
+    const { limit = 10 } = req.query;
+    const { rows } = await pool.query(`
+      SELECT
+        s.name as seller_name,
+        s.industry,
+        COUNT(a.id) as ad_count,
+        COALESCE(SUM(a.spent), 0) as total_spent,
+        COALESCE(SUM(a.daily_budget), 0) as total_budget
+      FROM sellers s
+      LEFT JOIN products p ON p.seller_id = s.id
+      LEFT JOIN ads a ON a.product_id = p.id
+      GROUP BY s.id, s.name, s.industry
+      ORDER BY total_spent DESC
+      LIMIT $1
+    `, [limit]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics top-sellers error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Top performing ads (bar chart)
 app.get('/api/analytics/top-ads', requireAuth, async (req, res) => {
-  const { limit = 10 } = req.query;
-  const { rows } = await pool.query(`
-    SELECT 
-      a.headline,
-      a.format,
-      a.spent,
-      a.daily_budget,
-      a.cost_per_match,
-      p.title as product_title,
-      s.name as seller_name,
-      CASE WHEN a.daily_budget > 0 
-           THEN ROUND((a.spent / a.daily_budget * 100)::numeric, 1)
-           ELSE 0 END as budget_used_pct
-    FROM ads a
-    JOIN products p ON a.product_id = p.id
-    JOIN sellers s ON p.seller_id = s.id
-    ORDER BY a.spent DESC
-    LIMIT $1
-  `, [limit]);
-  res.json(rows);
+  try {
+    const { limit = 10 } = req.query;
+    const { rows } = await pool.query(`
+      SELECT
+        a.headline,
+        a.format,
+        a.spent,
+        a.daily_budget,
+        a.cost_per_match,
+        p.title as product_title,
+        s.name as seller_name,
+        CASE WHEN a.daily_budget > 0
+             THEN ROUND((a.spent / a.daily_budget * 100)::numeric, 1)
+             ELSE 0 END as budget_used_pct
+      FROM ads a
+      JOIN products p ON a.product_id = p.id
+      JOIN sellers s ON p.seller_id = s.id
+      ORDER BY a.spent DESC
+      LIMIT $1
+    `, [limit]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics top-ads error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Ads by format (donut chart)
 app.get('/api/analytics/ads-by-format', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT 
-      format,
-      COUNT(*) as count,
-      COALESCE(SUM(spent), 0) as total_spent
-    FROM ads
-    GROUP BY format
-    ORDER BY count DESC
-  `);
-  res.json(rows);
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        format,
+        COUNT(*) as count,
+        COALESCE(SUM(spent), 0) as total_spent
+      FROM ads
+      GROUP BY format
+      ORDER BY count DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics ads-by-format error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Ads by category (bar chart)
 app.get('/api/analytics/ads-by-category', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT 
-      p.category,
-      COUNT(a.id) as ad_count,
-      COALESCE(SUM(a.spent), 0) as total_spent
-    FROM ads a
-    JOIN products p ON a.product_id = p.id
-    GROUP BY p.category
-    ORDER BY ad_count DESC
-    LIMIT 10
-  `);
-  res.json(rows);
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        p.category,
+        COUNT(a.id) as ad_count,
+        COALESCE(SUM(a.spent), 0) as total_spent
+      FROM ads a
+      JOIN products p ON a.product_id = p.id
+      GROUP BY p.category
+      ORDER BY ad_count DESC
+      LIMIT 10
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics ads-by-category error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Buyers by platform (donut chart)
 app.get('/api/analytics/buyers-by-platform', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT 
-      platform,
-      COUNT(*) as count
-    FROM buyers
-    GROUP BY platform
-    ORDER BY count DESC
-  `);
-  res.json(rows);
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        platform,
+        COUNT(*) as count
+      FROM buyers
+      GROUP BY platform
+      ORDER BY count DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics buyers-by-platform error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Sellers by plan (donut chart)
 app.get('/api/analytics/sellers-by-plan', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT 
-      plan,
-      COUNT(*) as count,
-      SUM(balance) as total_balance
-    FROM sellers
-    GROUP BY plan
-    ORDER BY count DESC
-  `);
-  res.json(rows);
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        plan,
+        COUNT(*) as count,
+        SUM(balance) as total_balance
+      FROM sellers
+      GROUP BY plan
+      ORDER BY count DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics sellers-by-plan error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Buyer activity over time
 app.get('/api/analytics/buyer-trend', requireAuth, async (req, res) => {
-  const { start, end } = req.query;
-  const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const endDate = end || new Date().toISOString().split('T')[0];
+  try {
+    const { start, end } = req.query;
+    const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const endDate = end || new Date().toISOString().split('T')[0];
 
-  const { rows } = await pool.query(`
-    SELECT 
-      date_trunc('day', created_at)::date as date,
-      COUNT(*) as new_buyers
-    FROM buyers
-    WHERE created_at BETWEEN $1 AND $2::date + interval '1 day'
-    GROUP BY date_trunc('day', created_at)::date
-    ORDER BY date ASC
-  `, [startDate, endDate]);
-  res.json(rows);
+    const { rows } = await pool.query(`
+      SELECT
+        date_trunc('day', created_at)::date as date,
+        COUNT(*) as new_buyers
+      FROM buyers
+      WHERE created_at BETWEEN $1 AND $2::date + interval '1 day'
+      GROUP BY date_trunc('day', created_at)::date
+      ORDER BY date ASC
+    `, [startDate, endDate]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Analytics buyer-trend error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3001;

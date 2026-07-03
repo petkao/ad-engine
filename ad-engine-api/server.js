@@ -571,10 +571,17 @@ app.post('/auth/register', async (req, res) => {
 
     req.login(accountRes.rows[0], (err) => {
       if (err) return res.status(500).json({ error: 'Login after register failed.' });
+      // Include approval_status in user object so frontend can check it
+      const userWithStatus = {
+        ...safeUser(accountRes.rows[0]),
+        approval_status: 'pending_review',
+        email_verified: false
+      };
       res.json({
         success: true,
-        user: safeUser(accountRes.rows[0]),
+        user: userWithStatus,
         seller: sellerRes.rows[0],
+        approval_status: 'pending_review',
         message: 'Please check your email to verify your account.'
       });
     });

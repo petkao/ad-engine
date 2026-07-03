@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PinkCurve - AI-Powered Buyer Intent Advertising</title>
+  <meta name="description" content="Connect with buyers at the moment of intent. AI-native buyer-intent ad platform matching buyers with sellers using semantic search and video ads.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --pink-primary: #EC4899;
+      --pink-dark: #DB2777;
+      --pink-light: #F472B6;
+      --pink-gradient: linear-gradient(135deg, #EC4899, #A855F7);
+      --purple-accent: #A855F7;
+      --slate-900: #0F172A;
+      --slate-800: #1E293B;
+      --slate-700: #334155;
+      --slate-600: #475569;
+      --slate-500: #64748B;
+      --slate-400: #94A3B8;
+      --slate-300: #CBD5E1;
+      --slate-200: #E2E8F0;
+      --slate-100: #F1F5F9;
+      --slate-50: #F8FAFC;
+      --white: #FFFFFF;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--slate-700);
+      line-height: 1.6;
+      background: var(--white);
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Navigation */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--slate-200);
+      z-index: 1000;
+    }
+
+    .nav-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 72px;
+    }
+
+    .logo {
+      font-family: 'DM Serif Display', serif;
+      font-size: 28px;
+      font-weight: 400;
+      background: var(--pink-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .nav-links a {
+      color: var(--slate-600);
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--pink-primary);
+    }
+
+    .nav-cta {
+      background: var(--pink-gradient);
+      color: var(--white) !important;
+      padding: 10px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .nav-cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(236, 72, 153, 0.4);
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 160px 0 120px;
+      background: linear-gradient(180deg, var(--slate-50) 0%, var(--white) 100%);
+      text-align: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--pink-light);
+      background: linear-gradient(135deg, rgba(236, 72, 153, 0.1), rgba(168, 85, 247, 0.1));
+      color: var(--pink-dark);
+      padding: 8px 16px;
+      border-radius: 100px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 24px;
+      border: 1px solid rgba(236, 72, 153, 0.2);
+    }
+
+    .hero h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(40px, 6vw, 72px);
+      font-weight: 400;
+      color: var(--slate-900);
+      margin-bottom: 24px;
+      line-height: 1.1;
+    }
+
+    .hero h1 span {
+      background: var(--pink-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-subtext {
+      font-size: 20px;
+      color: var(--slate-600);
+      max-width: 600px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px 32px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--pink-gradient);
+      color: var(--white);
+      box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(236, 72, 153, 0.5);
+    }
+
+    .btn-secondary {
+      background: var(--white);
+      color: var(--slate-700);
+      border: 2px solid var(--slate-200);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--pink-primary);
+      color: var(--pink-primary);
+    }
+
+    /* How It Works Section */
+    .how-it-works {
+      padding: 120px 0;
+      background: var(--white);
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 64px;
+    }
+
+    .section-label {
+      display: inline-block;
+      color: var(--pink-primary);
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(32px, 4vw, 48px);
+      color: var(--slate-900);
+      margin-bottom: 16px;
+    }
+
+    .section-subtitle {
+      font-size: 18px;
+      color: var(--slate-500);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 48px;
+    }
+
+    .step-card {
+      text-align: center;
+      padding: 40px 32px;
+      background: var(--slate-50);
+      border-radius: 24px;
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .step-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+    }
+
+    .step-icon {
+      width: 80px;
+      height: 80px;
+      background: var(--pink-gradient);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      margin: 0 auto 24px;
+    }
+
+    .step-number {
+      display: inline-block;
+      width: 32px;
+      height: 32px;
+      background: var(--pink-primary);
+      color: var(--white);
+      border-radius: 50%;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 32px;
+      margin-bottom: 16px;
+    }
+
+    .step-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--slate-900);
+      margin-bottom: 12px;
+    }
+
+    .step-desc {
+      color: var(--slate-500);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* Features Section */
+    .features {
+      padding: 120px 0;
+      background: var(--slate-900);
+    }
+
+    .features .section-label {
+      color: var(--pink-light);
+    }
+
+    .features .section-title {
+      color: var(--white);
+    }
+
+    .features .section-subtitle {
+      color: var(--slate-400);
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--slate-800);
+      border: 1px solid var(--slate-700);
+      border-radius: 16px;
+      padding: 32px;
+      transition: border-color 0.3s, transform 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--pink-primary);
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      font-size: 32px;
+      margin-bottom: 16px;
+    }
+
+    .feature-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 8px;
+    }
+
+    .feature-desc {
+      color: var(--slate-400);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* For Sellers Section */
+    .for-sellers {
+      padding: 120px 0;
+      background: linear-gradient(180deg, var(--white) 0%, var(--slate-50) 100%);
+    }
+
+    .sellers-content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 80px;
+      align-items: center;
+    }
+
+    .sellers-text h2 {
+      font-family: 'DM Serif Display', serif;
+      font-size: clamp(32px, 4vw, 48px);
+      color: var(--slate-900);
+      margin-bottom: 24px;
+    }
+
+    .sellers-text h2 span {
+      background: var(--pink-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .sellers-text p {
+      color: var(--slate-600);
+      font-size: 18px;
+      margin-bottom: 32px;
+      line-height: 1.7;
+    }
+
+    .benefits-list {
+      list-style: none;
+      margin-bottom: 40px;
+    }
+
+    .benefits-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 16px;
+      font-size: 16px;
+      color: var(--slate-700);
+    }
+
+    .benefits-list li::before {
+      content: "✓";
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      background: var(--pink-primary);
+      color: var(--white);
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .sellers-visual {
+      position: relative;
+    }
+
+    .sellers-card {
+      background: var(--white);
+      border-radius: 24px;
+      padding: 40px;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.12);
+      border: 1px solid var(--slate-200);
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .stat-item {
+      text-align: center;
+      padding: 24px;
+      background: var(--slate-50);
+      border-radius: 16px;
+    }
+
+    .stat-value {
+      font-size: 36px;
+      font-weight: 700;
+      background: var(--pink-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .stat-label {
+      font-size: 14px;
+      color: var(--slate-500);
+      margin-top: 4px;
+    }
+
+    /* Footer */
+    footer {
+      background: var(--slate-900);
+      padding: 80px 0 40px;
+    }
+
+    .footer-content {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: 64px;
+      margin-bottom: 64px;
+    }
+
+    .footer-brand .logo {
+      display: inline-block;
+      margin-bottom: 16px;
+    }
+
+    .footer-brand p {
+      color: var(--slate-400);
+      font-size: 15px;
+      line-height: 1.7;
+      max-width: 300px;
+    }
+
+    .footer-links h4 {
+      color: var(--white);
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 20px;
+    }
+
+    .footer-links ul {
+      list-style: none;
+    }
+
+    .footer-links li {
+      margin-bottom: 12px;
+    }
+
+    .footer-links a {
+      color: var(--slate-400);
+      text-decoration: none;
+      font-size: 15px;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--pink-light);
+    }
+
+    .footer-bottom {
+      border-top: 1px solid var(--slate-700);
+      padding-top: 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .footer-copyright {
+      color: var(--slate-500);
+      font-size: 14px;
+    }
+
+    .footer-legal {
+      display: flex;
+      gap: 24px;
+    }
+
+    .footer-legal a {
+      color: var(--slate-500);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+
+    .footer-legal a:hover {
+      color: var(--pink-light);
+    }
+
+    /* Mobile Responsive */
+    @media (max-width: 768px) {
+      .nav-links {
+        display: none;
+      }
+
+      .hero {
+        padding: 120px 0 80px;
+      }
+
+      .hero-buttons {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .btn {
+        width: 100%;
+        max-width: 300px;
+      }
+
+      .sellers-content {
+        grid-template-columns: 1fr;
+        gap: 48px;
+      }
+
+      .sellers-visual {
+        order: -1;
+      }
+
+      .footer-content {
+        grid-template-columns: 1fr;
+        gap: 40px;
+      }
+
+      .footer-bottom {
+        flex-direction: column;
+        text-align: center;
+      }
+
+      .footer-legal {
+        justify-content: center;
+      }
+    }
+
+    /* Animations */
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .animate-fade-in {
+      animation: fadeInUp 0.6s ease-out forwards;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation -->
+  <nav>
+    <div class="container nav-container">
+      <a href="#" class="logo">PinkCurve</a>
+      <div class="nav-links">
+        <a href="#how-it-works">How It Works</a>
+        <a href="#features">Features</a>
+        <a href="#sellers">For Sellers</a>
+        <a href="https://ad-engine-4da45.web.app" class="nav-cta">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge">
+        <span>✨</span> AI-Native Commerce Platform
+      </div>
+      <h1>
+        <span>AI-Powered</span> Buyer Intent<br>Advertising
+      </h1>
+      <p class="hero-subtext">
+        Connect with buyers at the moment of intent. Our AI matches
+        natural language searches with your video ads for maximum conversion.
+      </p>
+      <div class="hero-buttons">
+        <a href="https://ad-engine-4da45.web.app" class="btn btn-primary">
+          Start Selling
+        </a>
+        <a href="https://ad-engine-4da45.web.app/search" class="btn btn-secondary">
+          Find Products
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="how-it-works" id="how-it-works">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">How It Works</span>
+        <h2 class="section-title">Simple, Powerful, Effective</h2>
+        <p class="section-subtitle">
+          Three steps to connect buyers with the perfect products
+        </p>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-icon">🎯</div>
+          <span class="step-number">1</span>
+          <h3 class="step-title">Sellers Create Video Ads</h3>
+          <p class="step-desc">
+            Upload compelling video ads for your products. Showcase features,
+            benefits, and tell your brand story.
+          </p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-icon">🔍</div>
+          <span class="step-number">2</span>
+          <h3 class="step-title">Buyers Search Naturally</h3>
+          <p class="step-desc">
+            Buyers describe what they're looking for in plain language.
+            No keywords, no filters - just natural conversation.
+          </p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-icon">✨</div>
+          <span class="step-number">3</span>
+          <h3 class="step-title">AI Matches Intent to Ads</h3>
+          <p class="step-desc">
+            Our AI understands buyer intent and surfaces the most relevant
+            video ads at the perfect moment.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section class="features" id="features">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">Features</span>
+        <h2 class="section-title">Everything You Need to Succeed</h2>
+        <p class="section-subtitle">
+          Powerful tools built for modern commerce
+        </p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🤖</div>
+          <h3 class="feature-title">AI Intent Matching</h3>
+          <p class="feature-desc">
+            Advanced semantic search understands what buyers actually want,
+            not just what they type.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🎬</div>
+          <h3 class="feature-title">Video Ad Platform</h3>
+          <p class="feature-desc">
+            Upload and manage video ads that capture attention and drive
+            engagement better than static images.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <h3 class="feature-title">Real-time Analytics</h3>
+          <p class="feature-desc">
+            Track views, matches, and conversions in real-time.
+            Optimize your campaigns with data-driven insights.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🛡️</div>
+          <h3 class="feature-title">Verified Sellers Only</h3>
+          <p class="feature-desc">
+            All sellers are verified through our approval process,
+            ensuring quality and trust for buyers.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📍</div>
+          <h3 class="feature-title">Location-based Targeting</h3>
+          <p class="feature-desc">
+            Reach local buyers with geo-targeted ads. Perfect for
+            regional products and services.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">💳</div>
+          <h3 class="feature-title">Performance-based Pricing</h3>
+          <p class="feature-desc">
+            Pay only when buyers engage with your ads.
+            No upfront costs, no monthly fees.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- For Sellers Section -->
+  <section class="for-sellers" id="sellers">
+    <div class="container">
+      <div class="sellers-content">
+        <div class="sellers-text">
+          <h2>Grow Your Business with <span>Intent-Based</span> Advertising</h2>
+          <p>
+            Stop wasting budget on broad targeting. Reach buyers who are
+            actively searching for products like yours, right when they're
+            ready to buy.
+          </p>
+          <ul class="benefits-list">
+            <li>Reach buyers at the exact moment of intent</li>
+            <li>Pay only for results - no upfront costs</li>
+            <li>Easy video ad creation and management</li>
+            <li>Real-time performance dashboard</li>
+            <li>Verified seller badge builds trust</li>
+          </ul>
+          <a href="https://ad-engine-4da45.web.app" class="btn btn-primary">
+            Register as Seller
+          </a>
+        </div>
+
+        <div class="sellers-visual">
+          <div class="sellers-card">
+            <div class="stats-grid">
+              <div class="stat-item">
+                <div class="stat-value">10x</div>
+                <div class="stat-label">Higher Intent</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">3x</div>
+                <div class="stat-label">Better ROI</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">50%</div>
+                <div class="stat-label">Lower CPA</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">24/7</div>
+                <div class="stat-label">AI Matching</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-brand">
+          <a href="#" class="logo">PinkCurve</a>
+          <p>
+            AI-native buyer intent advertising platform.
+            Connecting buyers with sellers at the perfect moment.
+          </p>
+        </div>
+
+        <div class="footer-links">
+          <h4>Platform</h4>
+          <ul>
+            <li><a href="https://ad-engine-4da45.web.app">Seller Dashboard</a></li>
+            <li><a href="https://ad-engine-4da45.web.app/search">Buyer Search</a></li>
+            <li><a href="#how-it-works">How It Works</a></li>
+            <li><a href="#features">Features</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-links">
+          <h4>Contact</h4>
+          <ul>
+            <li><a href="mailto:support@pinkcurve.com">support@pinkcurve.com</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <p class="footer-copyright">
+          &copy; 2025 PinkCurve. All rights reserved.
+        </p>
+        <div class="footer-legal">
+          <a href="#">Privacy Policy</a>
+          <a href="#">Terms of Service</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

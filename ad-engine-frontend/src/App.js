@@ -91,14 +91,17 @@ function AppShell() {
   const [buyerMode, setBuyerMode] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Fetch pending count for admin users
+  // Determine if user is admin early for effects
+  const userIsAdmin = user?.role === 'admin';
+
+  // Fetch pending count for admin users only
   useEffect(() => {
-    if (user?.role === 'admin') {
+    if (userIsAdmin) {
       api.getPendingSellersCount()
         .then(data => setPendingCount(data.count || 0))
         .catch(() => setPendingCount(0));
     }
-  }, [user, page]); // Refresh when page changes (in case they just approved someone)
+  }, [userIsAdmin, page]); // Refresh when page changes (in case they just approved someone)
 
   // Check if this is a public page
   const isSearchPage = window.location.pathname === '/search';
@@ -117,7 +120,7 @@ function AppShell() {
 
   // Check seller approval status - redirect non-approved sellers to waiting page
   // Admins always have access regardless of approval_status
-  if (user.role !== 'admin' && user.approval_status && user.approval_status !== 'approved') {
+  if (!userIsAdmin && user.approval_status && user.approval_status !== 'approved') {
     return <PendingApprovalWaiting />;
   }
 
@@ -139,10 +142,16 @@ function AppShell() {
     </div>
   );
 
-  // Route protection: if seller tries to access admin-only page, redirect to dashboard
-  const effectivePage = (user.role !== 'admin' && ADMIN_ONLY_PAGES.includes(page)) ? 'dashboard' : page;
+  // Debug: log user role to console
+  console.log('[App.js] User role:', user.role, '| Page:', page, '| User:', user);
+
+  // Determine if user is admin - explicit check
+  const isAdmin = user.role === 'admin';
+
+  // Route protection: if non-admin tries to access admin-only page, redirect to dashboard
+  const effectivePage = (!isAdmin && ADMIN_ONLY_PAGES.includes(page)) ? 'dashboard' : page;
   const Page = PAGES[effectivePage];
-  const showEmailBanner = user.email_verified === false && user.role !== 'admin';
+  const showEmailBanner = user.email_verified === false && !isAdmin;
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden">
@@ -154,7 +163,8 @@ function AppShell() {
           <div className="text-xs text-slate-400 mt-0.5">Peter Kao Associates</div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {ALL_NAV.filter(item => item.roles.includes(user.role || 'seller')).map(item => (
+          {/* Filter nav items by role - sellers only see seller items, admins see all */}
+          {ALL_NAV.filter(item => item.roles.includes(isAdmin ? 'admin' : 'seller')).map(item => (
             <button key={item.id} onClick={() => setPage(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${effectivePage === item.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
               <span>{item.icon}</span>
@@ -167,7 +177,7 @@ function AppShell() {
             </button>
           ))}
           {/* Only show Buyer Search for admin users */}
-          {user.role === 'admin' && (
+          {isAdmin && (
             <div className="pt-2 mt-2 border-t border-slate-100">
               <button onClick={() => setBuyerMode(true)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-green-600 hover:bg-green-50 transition-all">
@@ -184,9 +194,14 @@ function AppShell() {
                 {(user.email || 'S')[0].toUpperCase()}
               </div>
             }
-            <div className="overflow-hidden">
-              <div className="text-xs font-medium text-slate-700 truncate">
-                {user.seller_name || (user.role === 'admin' ? 'Admin' : 'Seller')}
+            <div className="overflow-hidden flex-1">
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-medium text-slate-700 truncate">
+                  {user.seller_name || (isAdmin ? 'Admin' : 'Seller')}
+                </div>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${isAdmin ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
+                  {isAdmin ? 'Admin' : 'Seller'}
+                </span>
               </div>
               <div className="text-xs text-slate-400 truncate">{user.email}</div>
             </div>

@@ -45,4 +45,7 @@ Server listens on port 8080 by default (configurable via PORT env var). Set PINK
 
 ## Deployment
 
-gcloud run deploy ad-engine-mcp --source . --region=us-west1 --allow-unauthenticated
+```bash
+# IMPORTANT: Use --clear-base-image to force Dockerfile build (prevents Buildpacks issues)
+gcloud run deploy ad-engine-mcp --source . --region=us-west1 --allow-unauthenticated --clear-base-image
+```

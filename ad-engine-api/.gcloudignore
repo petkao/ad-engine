@@ -1,0 +1,31 @@
+# .gcloudignore - Files to exclude from Cloud Run source deploy
+# This file ensures consistent builds using the Dockerfile
+
+# Git
+.git
+.gitignore
+
+# Dependencies (will be installed in container)
+node_modules/
+
+# Development files
+*.md
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*.test.js
+__tests__/
+
+# Logs
+*.log
+logs/

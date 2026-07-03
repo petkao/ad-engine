@@ -189,11 +189,17 @@ function ensureGeoLogTables() {
         state VARCHAR(100),
         country VARCHAR(100),
         geo_match BOOLEAN,
+        is_vpn BOOLEAN DEFAULT false,
+        event_type VARCHAR(20) DEFAULT 'registration',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE INDEX IF NOT EXISTS idx_seller_geo_log_seller_id
         ON seller_geo_log (seller_id, created_at DESC);
+
+      -- Add is_vpn and event_type columns if missing (for existing tables)
+      ALTER TABLE seller_geo_log ADD COLUMN IF NOT EXISTS is_vpn BOOLEAN DEFAULT false;
+      ALTER TABLE seller_geo_log ADD COLUMN IF NOT EXISTS event_type VARCHAR(20) DEFAULT 'registration';
 
       CREATE TABLE IF NOT EXISTS buyer_geo_log (
         id SERIAL PRIMARY KEY,
@@ -287,6 +293,121 @@ async function logSellerGeo(sellerId, req, claimedLocation = null) {
     console.log(`Logged seller geo: ${sellerId} from ${ip} - claimed: "${claimedLocation || 'none'}", detected: "${detectedLocation}", match: ${geoMatch}`);
   } catch (err) {
     console.error('Failed to log seller geo:', err.message);
+  }
+}
+
+/**
+ * Check if IP is a VPN/proxy using ip-api.com
+ * @param {string} ip - IP address to check
+ * @returns {Promise<boolean>} true if VPN/proxy detected
+ */
+async function checkVpnStatus(ip) {
+  // Skip check for localhost/private IPs
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.')) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(`http://ip-api.com/json/${ip}?fields=proxy,hosting`);
+    if (!response.ok) return false;
+    const data = await response.json();
+    // Flag as VPN if proxy=true OR hosting=true (datacenter IP)
+    return data.proxy === true || data.hosting === true;
+  } catch (err) {
+    console.error(`VPN check failed for ${ip}:`, err.message);
+    return false;
+  }
+}
+
+/**
+ * Log seller login with geo monitoring and suspicious activity detection
+ * Auto-suspends sellers with 3+ geo mismatches in 30 days
+ * @param {string} sellerId - Seller UUID
+ * @param {object} seller - Seller record with location
+ * @param {Request} req - Express request object
+ * @returns {Promise<{suspended: boolean, reason?: string}>}
+ */
+async function logSellerLoginGeo(sellerId, seller, req) {
+  try {
+    await ensureGeoLogTables();
+    const ip = getClientIp(req);
+    const geo = resolveGeo(ip);
+    const isVpn = await checkVpnStatus(ip);
+
+    // Determine geo_match by comparing with registered location
+    let geoMatch = true;
+    if (seller.location && geo.country) {
+      const claimed = seller.location.toLowerCase();
+      const matchesCity = geo.city && claimed.includes(geo.city.toLowerCase());
+      const matchesState = geo.state && claimed.includes(geo.state.toLowerCase());
+      const matchesCountry = geo.country && claimed.includes(geo.country.toLowerCase());
+      geoMatch = matchesCity || matchesState || matchesCountry;
+    }
+
+    // Log the login event
+    await pool.query(
+      `INSERT INTO seller_geo_log (seller_id, ip, city, state, country, geo_match, is_vpn, event_type, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'login', NOW())`,
+      [sellerId, ip, geo.city, geo.state, geo.country, geoMatch, isVpn]
+    );
+
+    console.log(`Login geo log: seller=${sellerId}, ip=${ip}, city=${geo.city}, match=${geoMatch}, vpn=${isVpn}`);
+
+    // Count mismatches in last 30 days (VPN counts double)
+    const mismatchResult = await pool.query(
+      `SELECT
+         SUM(CASE WHEN geo_match = false AND is_vpn = false THEN 1 ELSE 0 END) +
+         SUM(CASE WHEN geo_match = false AND is_vpn = true THEN 2 ELSE 0 END) +
+         SUM(CASE WHEN is_vpn = true THEN 1 ELSE 0 END) as weighted_count
+       FROM seller_geo_log
+       WHERE seller_id = $1
+       AND created_at > NOW() - INTERVAL '30 days'`,
+      [sellerId]
+    );
+
+    const weightedMismatches = parseInt(mismatchResult.rows[0]?.weighted_count || 0, 10);
+
+    // Auto-suspend if weighted mismatches >= 3
+    if (weightedMismatches >= 3) {
+      // Get recent login locations for the notification
+      const recentLogins = await pool.query(
+        `SELECT city, state, country, ip, geo_match, is_vpn, created_at
+         FROM seller_geo_log
+         WHERE seller_id = $1
+         ORDER BY created_at DESC
+         LIMIT 5`,
+        [sellerId]
+      );
+
+      // Suspend the seller
+      await pool.query(
+        `UPDATE sellers SET approval_status = 'suspended', updated_at = NOW() WHERE id = $1`,
+        [sellerId]
+      );
+
+      // Send admin notification
+      const locationsList = recentLogins.rows.map(r =>
+        `${r.city || 'Unknown'}, ${r.state || ''}, ${r.country || ''} (${r.geo_match ? 'Match' : 'MISMATCH'}${r.is_vpn ? ', VPN' : ''})`
+      ).join('<br>');
+
+      const { sendAutoSuspensionNotification } = require('./emailService');
+      await sendAutoSuspensionNotification({
+        name: seller.name,
+        email: seller.email,
+        registeredLocation: seller.location || 'Not provided',
+        recentLocations: locationsList,
+        mismatchCount: weightedMismatches
+      });
+
+      console.log(`AUTO-SUSPENDED seller ${sellerId} (${seller.email}) due to ${weightedMismatches} weighted geo mismatches`);
+
+      return { suspended: true, reason: 'Account suspended pending security review due to suspicious login locations.' };
+    }
+
+    return { suspended: false };
+  } catch (err) {
+    console.error('Failed to log seller login geo:', err.message);
+    return { suspended: false };
   }
 }
 
@@ -590,18 +711,33 @@ app.post('/auth/login', (req, res, next) => {
       const token = generateToken(user);
       const safeUserObj = safeUser(user);
 
-      // Look up seller's email_verified and approval_status
+      // Look up seller's email_verified, approval_status, and location
       let emailVerified = true; // Default for admin accounts
       let approvalStatus = 'approved'; // Default for admin accounts
+      let seller = null;
+
       if (user.seller_id) {
         try {
           const sellerRes = await pool.query(
-            'SELECT email_verified, approval_status FROM sellers WHERE id = $1',
+            'SELECT id, name, email, location, email_verified, approval_status FROM sellers WHERE id = $1',
             [user.seller_id]
           );
           if (sellerRes.rows.length) {
-            emailVerified = sellerRes.rows[0].email_verified === true;
-            approvalStatus = sellerRes.rows[0].approval_status || 'pending_review';
+            seller = sellerRes.rows[0];
+            emailVerified = seller.email_verified === true;
+            approvalStatus = seller.approval_status || 'pending_review';
+
+            // Geo monitoring: log login location and check for suspicious activity
+            const geoResult = await logSellerLoginGeo(user.seller_id, seller, req);
+
+            // If auto-suspended due to suspicious locations, return 403
+            if (geoResult.suspended) {
+              req.logout(() => {});
+              return res.status(403).json({
+                error: geoResult.reason,
+                approval_status: 'suspended'
+              });
+            }
           }
         } catch (e) {
           console.error('Failed to check seller status:', e);
@@ -1823,6 +1959,8 @@ app.get('/api/admin/seller-geo-logs', requireAuth, requireAdmin, async (req, res
         sgl.state as detected_state,
         sgl.country as detected_country,
         sgl.geo_match,
+        sgl.is_vpn,
+        sgl.event_type,
         sgl.created_at
       FROM seller_geo_log sgl
       LEFT JOIN sellers s ON sgl.seller_id = s.id
@@ -1832,6 +1970,66 @@ app.get('/api/admin/seller-geo-logs', requireAuth, requireAdmin, async (req, res
     res.json(rows);
   } catch (err) {
     console.error('Error fetching seller geo logs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get login history for a specific seller
+app.get('/api/admin/seller-login-history/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isUuid(id)) {
+      return res.status(400).json({ error: 'Seller ID must be a valid UUID' });
+    }
+
+    // Get seller info
+    const sellerRes = await pool.query(
+      'SELECT id, name, email, location FROM sellers WHERE id = $1',
+      [id]
+    );
+    if (!sellerRes.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    const seller = sellerRes.rows[0];
+
+    // Get all login/registration geo logs for this seller
+    const { rows: logs } = await pool.query(`
+      SELECT
+        id,
+        ip,
+        city,
+        state,
+        country,
+        geo_match,
+        is_vpn,
+        event_type,
+        created_at
+      FROM seller_geo_log
+      WHERE seller_id = $1
+      ORDER BY created_at DESC
+      LIMIT 50
+    `, [id]);
+
+    // Calculate mismatch stats
+    const mismatchCount = logs.filter(l => !l.geo_match).length;
+    const vpnCount = logs.filter(l => l.is_vpn).length;
+
+    res.json({
+      seller: {
+        id: seller.id,
+        name: seller.name,
+        email: seller.email,
+        registered_location: seller.location
+      },
+      stats: {
+        total_logins: logs.length,
+        mismatches: mismatchCount,
+        vpn_logins: vpnCount
+      },
+      logs
+    });
+  } catch (err) {
+    console.error('Error fetching seller login history:', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -387,6 +387,73 @@ async function sendSellerSuspendedEmail(sellerEmail, sellerName) {
     }
 }
 
+/**
+ * Send admin notification when a seller is auto-suspended due to suspicious locations
+ */
+async function sendAutoSuspensionNotification(data) {
+    try {
+        if (containsPromptInjection(data.name) || containsPromptInjection(data.email)) {
+            console.warn(`Blocked auto-suspension notification: prompt injection detected`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(data.name);
+        const safeEmail = sanitizeForEmail(data.email);
+        const safeLocation = sanitizeForEmail(data.registeredLocation);
+
+        const adminEmail = TEST_EMAIL || ADMIN_EMAIL;
+
+        await resend.emails.send({
+            from: FROM,
+            to: adminEmail,
+            subject: `⚠️ Seller auto-suspended: suspicious login locations`,
+            html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve Admin Alert</h1>
+          </div>
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <h2 style="color: #dc2626; margin: 0 0 8px 0; font-size: 18px;">⚠️ Seller Auto-Suspended</h2>
+            <p style="color: #7f1d1d; margin: 0;">A seller has been automatically suspended due to suspicious login locations.</p>
+          </div>
+
+          <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <h3 style="color: #334155; margin: 0 0 12px 0; font-size: 14px; text-transform: uppercase;">Seller Details</h3>
+            <table style="width: 100%; color: #475569; font-size: 14px;">
+              <tr><td style="padding: 4px 0; font-weight: 600;">Name:</td><td>${safeName}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Email:</td><td>${safeEmail}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Registered Location:</td><td>${safeLocation}</td></tr>
+              <tr><td style="padding: 4px 0; font-weight: 600;">Mismatch Count:</td><td style="color: #dc2626; font-weight: 600;">${data.mismatchCount} (threshold: 3)</td></tr>
+            </table>
+          </div>
+
+          <div style="background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <h3 style="color: #c2410c; margin: 0 0 12px 0; font-size: 14px; text-transform: uppercase;">Recent Login Locations</h3>
+            <div style="color: #9a3412; font-size: 13px; line-height: 1.8;">
+              ${data.recentLocations}
+            </div>
+          </div>
+
+          <div style="text-align: center; margin-top: 24px;">
+            <a href="${process.env.CLIENT_URL || 'https://ad-engine-4da45.web.app'}"
+               style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">
+              Review in Dashboard
+            </a>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve Security Alert — Automated Fraud Prevention</p>
+        </div>
+      `,
+        });
+        console.log(`Auto-suspension admin notification sent for ${safeEmail}`);
+        return true;
+    } catch (err) {
+        console.error('Failed to send auto-suspension notification:', err);
+        return false;
+    }
+}
+
 module.exports = {
     sendAdApprovedEmail,
     sendMatchNotificationEmail,
@@ -395,5 +462,6 @@ module.exports = {
     sendSellerApprovedEmail,
     sendSellerRejectedEmail,
     sendSellerSuspendedEmail,
+    sendAutoSuspensionNotification,
     setPool
 };

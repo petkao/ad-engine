@@ -161,6 +161,11 @@ function ensureGeoLogTables() {
 
       CREATE INDEX IF NOT EXISTS idx_buyer_geo_log_session_id
         ON buyer_geo_log (session_id, created_at DESC);
+
+      -- Add geo-related columns to sellers table if missing
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS location VARCHAR(255);
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false;
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS geo_verified BOOLEAN DEFAULT false;
     `).catch((err) => {
       geoLogTablesReady = undefined;
       console.error('Failed to create geo log tables:', err.message);
@@ -171,19 +176,39 @@ function ensureGeoLogTables() {
 
 /**
  * Log seller geolocation data on registration
+ * Also updates seller's location and geo_verified if not already set
  */
 async function logSellerGeo(sellerId, req) {
   try {
     await ensureGeoLogTables();
     const ip = getClientIp(req);
     const geo = resolveGeo(ip);
+    const geoMatch = geo.country !== '';
 
+    // Insert into geo log
     await pool.query(
       `INSERT INTO seller_geo_log (seller_id, ip, city, state, country, geo_match, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-      [sellerId, ip, geo.city, geo.state, geo.country, geo.country !== '']
+      [sellerId, ip, geo.city, geo.state, geo.country, geoMatch]
     );
-    console.log(`Logged seller geo: ${sellerId} from ${ip} (${geo.city}, ${geo.state}, ${geo.country})`);
+
+    // Build location string from detected geo
+    const locationParts = [geo.city, geo.state, geo.country].filter(Boolean);
+    const detectedLocation = locationParts.join(', ');
+
+    // Update seller's location and geo_verified if location not already set
+    if (detectedLocation) {
+      await pool.query(
+        `UPDATE sellers
+         SET location = COALESCE(NULLIF(location, ''), $2),
+             geo_verified = $3,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [sellerId, detectedLocation, geoMatch]
+      );
+    }
+
+    console.log(`Logged seller geo: ${sellerId} from ${ip} (${detectedLocation}) - geo_verified: ${geoMatch}`);
   } catch (err) {
     console.error('Failed to log seller geo:', err.message);
   }

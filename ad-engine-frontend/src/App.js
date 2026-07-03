@@ -14,6 +14,7 @@ import BuyerSearch from './pages/BuyerSearch';
 import BuyerLanding from './pages/BuyerLanding';
 import VerifyEmail from './pages/VerifyEmail';
 import PendingApproval from './pages/PendingApproval';
+import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
 
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
@@ -107,6 +108,12 @@ function AppShell() {
   );
 
   if (!user) return <Login />;
+
+  // Check seller approval status - redirect non-approved sellers to waiting page
+  // Admins always have access regardless of approval_status
+  if (user.role !== 'admin' && user.approval_status && user.approval_status !== 'approved') {
+    return <PendingApprovalWaiting />;
+  }
 
   // Buyer search full-screen mode
   if (buyerMode) return (

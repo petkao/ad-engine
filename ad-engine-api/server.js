@@ -437,6 +437,38 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Check if seller is approved (admins always pass, sellers must be approved)
+async function checkSellerApproved(req, res, next) {
+  // Admins bypass approval check
+  if (req.user?.role === 'admin') return next();
+
+  const sellerId = req.user?.seller_id;
+  if (!sellerId) return next(); // No seller_id means not a seller account
+
+  try {
+    const result = await pool.query(
+      'SELECT approval_status FROM sellers WHERE id = $1',
+      [sellerId]
+    );
+    if (result.rows.length > 0) {
+      const status = result.rows[0].approval_status;
+      if (status !== 'approved') {
+        let message = 'Your account is pending admin review. You will be notified when approved.';
+        if (status === 'rejected') {
+          message = 'Your account application was not approved.';
+        } else if (status === 'suspended') {
+          message = 'Your account has been suspended.';
+        }
+        return res.status(403).json({ error: message, approval_status: status });
+      }
+    }
+    next();
+  } catch (err) {
+    console.error('Error checking seller approval:', err);
+    next(); // Fail open on error to not break existing functionality
+  }
+}
+
 // Get seller_id for current user (admin gets null = all, seller gets their id)
 async function getSellerFilter(req) {
   if (req.user?.role === 'admin') return null;
@@ -558,27 +590,30 @@ app.post('/auth/login', (req, res, next) => {
       const token = generateToken(user);
       const safeUserObj = safeUser(user);
 
-      // Look up seller's email_verified status
+      // Look up seller's email_verified and approval_status
       let emailVerified = true; // Default for admin accounts
+      let approvalStatus = 'approved'; // Default for admin accounts
       if (user.seller_id) {
         try {
           const sellerRes = await pool.query(
-            'SELECT email_verified FROM sellers WHERE id = $1',
+            'SELECT email_verified, approval_status FROM sellers WHERE id = $1',
             [user.seller_id]
           );
           if (sellerRes.rows.length) {
             emailVerified = sellerRes.rows[0].email_verified === true;
+            approvalStatus = sellerRes.rows[0].approval_status || 'pending_review';
           }
         } catch (e) {
-          console.error('Failed to check email_verified:', e);
+          console.error('Failed to check seller status:', e);
         }
       }
 
       res.json({
         success: true,
-        user: { ...safeUserObj, email_verified: emailVerified },
+        user: { ...safeUserObj, email_verified: emailVerified, approval_status: approvalStatus },
         token,
-        email_verified: emailVerified
+        email_verified: emailVerified,
+        approval_status: approvalStatus
       });
     });
   })(req, res, next);
@@ -704,24 +739,28 @@ app.post('/auth/resend-verification', requireAuth, resendVerificationLimiter, as
 });
 
 app.get('/auth/me', async (req, res) => {
-  // Helper to add email_verified to user object
-  async function addEmailVerified(user) {
-    if (!user.seller_id) return { ...user, email_verified: true };
+  // Helper to add email_verified and approval_status to user object
+  async function addSellerStatus(user) {
+    if (!user.seller_id) return { ...user, email_verified: true, approval_status: 'approved' };
     try {
       const sellerRes = await pool.query(
-        'SELECT email_verified FROM sellers WHERE id = $1',
+        'SELECT email_verified, approval_status FROM sellers WHERE id = $1',
         [user.seller_id]
       );
-      const emailVerified = sellerRes.rows.length ? sellerRes.rows[0].email_verified === true : true;
-      return { ...user, email_verified: emailVerified };
+      if (sellerRes.rows.length) {
+        const emailVerified = sellerRes.rows[0].email_verified === true;
+        const approvalStatus = sellerRes.rows[0].approval_status || 'pending_review';
+        return { ...user, email_verified: emailVerified, approval_status: approvalStatus };
+      }
+      return { ...user, email_verified: true, approval_status: 'approved' };
     } catch {
-      return { ...user, email_verified: true };
+      return { ...user, email_verified: true, approval_status: 'approved' };
     }
   }
 
   if (req.isAuthenticated()) {
-    const userWithEmail = await addEmailVerified(safeUser(req.user));
-    return res.json({ user: userWithEmail });
+    const userWithStatus = await addSellerStatus(safeUser(req.user));
+    return res.json({ user: userWithStatus });
   }
 
   const authHeader = req.headers.authorization;
@@ -735,8 +774,8 @@ app.get('/auth/me', async (req, res) => {
 
     try {
       const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'ad-engine-secret-key');
-      const userWithEmail = await addEmailVerified(decoded);
-      return res.json({ user: userWithEmail });
+      const userWithStatus = await addSellerStatus(decoded);
+      return res.json({ user: userWithStatus });
     } catch {
       return res.status(401).json({ error: 'Invalid token' });
     }
@@ -918,7 +957,7 @@ app.get('/api/products', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/products', requireAuth, async (req, res) => {
+app.post('/api/products', requireAuth, checkSellerApproved, async (req, res) => {
   const { seller_id, title, description, price, currency, category, attributes, product_url } = req.body;
   const { rows } = await pool.query(
     `INSERT INTO products (id,seller_id,title,description,price,currency,category,attributes,product_url,status,created_at,updated_at)
@@ -928,7 +967,7 @@ app.post('/api/products', requireAuth, async (req, res) => {
   res.json(rows[0]);
 });
 
-app.put('/api/products/:id', requireAuth, async (req, res) => {
+app.put('/api/products/:id', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { title, description, price, category, status, product_url, seller_id } = req.body;
     const { rows } = await pool.query(
@@ -950,7 +989,7 @@ app.put('/api/products/:id', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-app.delete('/api/products/:id', requireAuth, async (req, res) => {
+app.delete('/api/products/:id', requireAuth, checkSellerApproved, async (req, res) => {
   await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
   res.json({ success: true });
 });
@@ -997,29 +1036,8 @@ app.get('/api/ads/:id', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/ads', requireAuth, async (req, res) => {
+app.post('/api/ads', requireAuth, checkSellerApproved, async (req, res) => {
   try {
-    // Check seller approval status before allowing ad creation
-    const sellerId = req.user?.seller_id;
-    if (sellerId) {
-      const sellerResult = await pool.query(
-        'SELECT approval_status FROM sellers WHERE id = $1',
-        [sellerId]
-      );
-      if (sellerResult.rows.length > 0) {
-        const approvalStatus = sellerResult.rows[0].approval_status;
-        if (approvalStatus !== 'approved') {
-          let message = 'Your account is pending admin review';
-          if (approvalStatus === 'rejected') {
-            message = 'Your account application was not approved';
-          } else if (approvalStatus === 'suspended') {
-            message = 'Your account has been suspended';
-          }
-          return res.status(403).json({ error: message });
-        }
-      }
-    }
-
     const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
     const { rows } = await pool.query(
       `INSERT INTO ads (id,product_id,format,headline,body_copy,intent_tags,cost_per_match,daily_budget,total_budget,spent,status,created_at,updated_at)
@@ -1032,7 +1050,7 @@ app.post('/api/ads', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Failed to create ad' });
   }
 });
-app.put('/api/ads/:id', requireAuth, async (req, res) => {
+app.put('/api/ads/:id', requireAuth, checkSellerApproved, async (req, res) => {
   const { headline, body_copy, format, cost_per_match, daily_budget, status } = req.body;
   const { rows } = await pool.query(
     `UPDATE ads SET headline=$1,body_copy=$2,format=$3,cost_per_match=$4,daily_budget=$5,status=$6,updated_at=now() WHERE id=$7 RETURNING *`,
@@ -1040,7 +1058,7 @@ app.put('/api/ads/:id', requireAuth, async (req, res) => {
   );
   res.json(rows[0]);
 });
-app.delete('/api/ads/:id', requireAuth, async (req, res) => {
+app.delete('/api/ads/:id', requireAuth, checkSellerApproved, async (req, res) => {
   await pool.query('DELETE FROM ads WHERE id=$1', [req.params.id]);
   res.json({ success: true });
 });
@@ -1367,7 +1385,7 @@ Return ONLY the JSON object, no other text.`,
 }
 
 // ── Upload product image ──────────────────────────────────────
-app.post('/api/products/:id/upload-image', requireAuth, upload.single('file'), async (req, res) => {
+app.post('/api/products/:id/upload-image', requireAuth, checkSellerApproved, upload.single('file'), async (req, res) => {
   try {
     const { id } = req.params;
     const file = req.file;

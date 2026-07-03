@@ -54,10 +54,10 @@ export function AuthProvider({ children }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Registration failed');
-    if (data.token) localStorage.setItem('auth_token', data.token);
-    localStorage.setItem('auth_user', JSON.stringify(data.user));
-    setUser(data.user);
-    return data.user;
+    // Nuclear option: Registration does NOT auto-login
+    // Pending sellers must manually log in after admin approval
+    // Return the response data including requiresLogin flag and message
+    return data;
   };
 
   const logout = async () => {

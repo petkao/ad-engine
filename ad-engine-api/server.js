@@ -569,21 +569,14 @@ app.post('/auth/register', async (req, res) => {
       location: location || null
     });
 
-    req.login(accountRes.rows[0], (err) => {
-      if (err) return res.status(500).json({ error: 'Login after register failed.' });
-      // Include approval_status in user object so frontend can check it
-      const userWithStatus = {
-        ...safeUser(accountRes.rows[0]),
-        approval_status: 'pending_review',
-        email_verified: false
-      };
-      res.json({
-        success: true,
-        user: userWithStatus,
-        seller: sellerRes.rows[0],
-        approval_status: 'pending_review',
-        message: 'Please check your email to verify your account.'
-      });
+    // NUCLEAR OPTION: Do NOT auto-login after registration
+    // Pending sellers must manually log in after admin approval
+    // This prevents any possibility of accessing the dashboard before approval
+    res.json({
+      success: true,
+      requiresLogin: true,
+      approval_status: 'pending_review',
+      message: 'Registration successful! Please check your email to verify your account. Your account is pending admin review - you will be notified when approved.'
     });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Registration failed.' }); }
 });
@@ -954,7 +947,7 @@ app.delete('/api/sellers/:id', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/products', requireAuth, async (req, res) => {
+app.get('/api/products', requireAuth, checkSellerApproved, async (req, res) => {
   const sellerFilter = await getSellerFilter(req);
   let sql = `SELECT p.*, s.name as seller_name FROM products p JOIN sellers s ON p.seller_id=s.id`;
   const params = [];
@@ -1001,7 +994,7 @@ app.delete('/api/products/:id', requireAuth, checkSellerApproved, async (req, re
   res.json({ success: true });
 });
 
-app.get('/api/ads', requireAuth, async (req, res) => {
+app.get('/api/ads', requireAuth, checkSellerApproved, async (req, res) => {
   const sellerFilter = await getSellerFilter(req);
   let sql = `SELECT a.*, p.title as product_title, p.category, p.product_url, p.image_url as product_image_url, s.name as seller_name, s.location as seller_location, s.is_verified as seller_verified
     FROM ads a JOIN products p ON a.product_id=p.id JOIN sellers s ON p.seller_id=s.id`;
@@ -1012,7 +1005,7 @@ app.get('/api/ads', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-app.get('/api/ads/:id', requireAuth, async (req, res) => {
+app.get('/api/ads/:id', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     if (!isUuid(req.params.id)) {
       return res.status(400).json({ error: 'Ad id must be a valid UUID' });
@@ -1098,7 +1091,7 @@ app.get('/api/buyers', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.get('/api/stats', requireAuth, async (req, res) => {
+app.get('/api/stats', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const sellerFilter = await getSellerFilter(req);
     if (sellerFilter) {
@@ -2411,7 +2404,7 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
 // ── ANALYTICS ROUTES ─────────────────────────────────────────
 
 // Platform overview stats
-app.get('/api/analytics/overview', requireAuth, async (req, res) => {
+app.get('/api/analytics/overview', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { start, end } = req.query;
     // Use parameterized queries to prevent SQL injection
@@ -2451,7 +2444,7 @@ app.get('/api/analytics/overview', requireAuth, async (req, res) => {
 });
 
 // Daily spend trend (line chart)
-app.get('/api/analytics/spend-trend', requireAuth, async (req, res) => {
+app.get('/api/analytics/spend-trend', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { start, end } = req.query;
     const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -2476,7 +2469,7 @@ app.get('/api/analytics/spend-trend', requireAuth, async (req, res) => {
 });
 
 // Top sellers by spend (bar chart)
-app.get('/api/analytics/top-sellers', requireAuth, async (req, res) => {
+app.get('/api/analytics/top-sellers', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { limit = 10 } = req.query;
     const { rows } = await pool.query(`
@@ -2501,7 +2494,7 @@ app.get('/api/analytics/top-sellers', requireAuth, async (req, res) => {
 });
 
 // Top performing ads (bar chart)
-app.get('/api/analytics/top-ads', requireAuth, async (req, res) => {
+app.get('/api/analytics/top-ads', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { limit = 10 } = req.query;
     const { rows } = await pool.query(`
@@ -2530,7 +2523,7 @@ app.get('/api/analytics/top-ads', requireAuth, async (req, res) => {
 });
 
 // Ads by format (donut chart)
-app.get('/api/analytics/ads-by-format', requireAuth, async (req, res) => {
+app.get('/api/analytics/ads-by-format', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -2549,7 +2542,7 @@ app.get('/api/analytics/ads-by-format', requireAuth, async (req, res) => {
 });
 
 // Ads by category (bar chart)
-app.get('/api/analytics/ads-by-category', requireAuth, async (req, res) => {
+app.get('/api/analytics/ads-by-category', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -2570,7 +2563,7 @@ app.get('/api/analytics/ads-by-category', requireAuth, async (req, res) => {
 });
 
 // Buyers by platform (donut chart)
-app.get('/api/analytics/buyers-by-platform', requireAuth, async (req, res) => {
+app.get('/api/analytics/buyers-by-platform', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -2588,7 +2581,7 @@ app.get('/api/analytics/buyers-by-platform', requireAuth, async (req, res) => {
 });
 
 // Sellers by plan (donut chart)
-app.get('/api/analytics/sellers-by-plan', requireAuth, async (req, res) => {
+app.get('/api/analytics/sellers-by-plan', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -2607,7 +2600,7 @@ app.get('/api/analytics/sellers-by-plan', requireAuth, async (req, res) => {
 });
 
 // Buyer activity over time
-app.get('/api/analytics/buyer-trend', requireAuth, async (req, res) => {
+app.get('/api/analytics/buyer-trend', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { start, end } = req.query;
     const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];

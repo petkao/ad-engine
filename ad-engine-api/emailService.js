@@ -454,6 +454,77 @@ async function sendAutoSuspensionNotification(data) {
     }
 }
 
+/**
+ * Send payment failed notification to seller and admin
+ */
+async function sendPaymentFailedEmail(sellerEmail, sellerName, amountDue) {
+    try {
+        if (containsPromptInjection(sellerName)) {
+            console.warn(`Blocked payment failed email to ${sellerEmail}: prompt injection detected`);
+            return false;
+        }
+
+        const allowed = await isAllowedRecipient(sellerEmail);
+        if (!allowed) {
+            console.warn(`Blocked email: ${sellerEmail} not in sellers allowlist`);
+            return false;
+        }
+
+        const safeName = sanitizeForEmail(sellerName);
+
+        // Email to seller
+        await resend.emails.send({
+            from: FROM,
+            to: getRecipient(sellerEmail),
+            subject: 'PinkCurve: Payment Failed - Action Required',
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="font-size: 28px; font-weight: bold; background: linear-gradient(135deg, #ec4899, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">PinkCurve</h1>
+          </div>
+          <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+            <h2 style="color: #dc2626; margin: 0 0 8px 0; font-size: 18px;">Payment Failed</h2>
+            <p style="color: #7f1d1d; margin: 0;">We were unable to process your payment of $${amountDue.toFixed(2)}.</p>
+          </div>
+          <p style="color: #475569; line-height: 1.6;">Hi ${safeName},</p>
+          <p style="color: #475569; line-height: 1.6;">We attempted to charge your payment method for your PinkCurve subscription, but the payment was declined.</p>
+          <p style="color: #475569; line-height: 1.6;">Please update your payment information to avoid any interruption to your service.</p>
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="https://ad-engine-4da45.web.app" style="display: inline-block; padding: 14px 32px; background: linear-gradient(135deg, #ec4899, #a855f7); color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Update Payment Method</a>
+          </div>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+          <p style="color: #94a3b8; font-size: 12px; text-align: center;">PinkCurve — Intent-Powered Advertising</p>
+        </div>
+      `,
+        });
+        console.log(`Payment failed email sent to ${sellerEmail}`);
+
+        // Also notify admin
+        const adminEmail = TEST_EMAIL || ADMIN_EMAIL;
+        await resend.emails.send({
+            from: FROM,
+            to: adminEmail,
+            subject: `Payment failed for ${safeName}`,
+            html: `
+        <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #dc2626;">Payment Failed Alert</h2>
+          <p>A payment of <strong>$${amountDue.toFixed(2)}</strong> failed for seller:</p>
+          <ul>
+            <li><strong>Name:</strong> ${safeName}</li>
+            <li><strong>Email:</strong> ${sanitizeForEmail(sellerEmail)}</li>
+          </ul>
+          <p>The seller has been notified to update their payment method.</p>
+        </div>
+      `,
+        });
+
+        return true;
+    } catch (err) {
+        console.error('Failed to send payment failed email:', err);
+        return false;
+    }
+}
+
 module.exports = {
     sendAdApprovedEmail,
     sendMatchNotificationEmail,
@@ -463,5 +534,6 @@ module.exports = {
     sendSellerRejectedEmail,
     sendSellerSuspendedEmail,
     sendAutoSuspensionNotification,
+    sendPaymentFailedEmail,
     setPool
 };

@@ -4,9 +4,11 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import { Spinner, StatCard } from '../components/UI';
+import { useAuth } from '../auth/AuthContext';
 
 // const BASE = 'http://localhost:3001/api/analytics';
 const BASE = `${process.env.REACT_APP_API_URL || 'http://localhost:3001'}/api/analytics`;
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 const COLORS = ['#2563eb', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#06b6d4', '#f97316', '#84cc16'];
 
@@ -90,8 +92,162 @@ function DateRangePicker({ start, end, onChange }) {
   );
 }
 
+// ── Revenue Tab (Admin Only) ─────────────────────────────────
+function RevenueTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    fetch(`${API_BASE}/api/admin/revenue`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    })
+      .then(r => r.json())
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Spinner />;
+  if (!data) return <div className="text-slate-500">Failed to load revenue data</div>;
+
+  return (
+    <div>
+      {/* MRR Stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard label="Monthly Recurring Revenue" value={`$${data.total_mrr.toFixed(0)}`} icon="💰" color="green" />
+        <StatCard label="Active Subscriptions" value={data.total_active_subscriptions} icon="📊" color="blue" />
+        <StatCard label="Failed Payments (30d)" value={data.failed_payments_30d} icon="⚠️" color={data.failed_payments_30d > 0 ? 'red' : 'slate'} />
+        <StatCard label="Projected ARR" value={`$${(data.total_mrr * 12).toFixed(0)}`} icon="📈" color="purple" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        {/* Subscriptions by Plan */}
+        <ChartCard title="Subscriptions by Plan" subtitle="Active paid subscriptions breakdown">
+          {data.subscriptions_by_plan?.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <Pie
+                  data={data.subscriptions_by_plan}
+                  dataKey="count"
+                  nameKey="plan"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={80}
+                  innerRadius={40}
+                  label={({ name, count, mrr }) => `${name}: ${count} ($${mrr}/mo)`}
+                >
+                  {data.subscriptions_by_plan.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-52 flex items-center justify-center text-slate-400 text-sm">No paid subscriptions yet</div>
+          )}
+        </ChartCard>
+
+        {/* MRR by Plan Breakdown */}
+        <ChartCard title="MRR by Plan" subtitle="Revenue breakdown by subscription tier">
+          <div className="space-y-4">
+            {data.subscriptions_by_plan?.map((plan, i) => (
+              <div key={plan.plan} className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-3 h-3 rounded-full"
+                    style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                  />
+                  <span className="font-medium text-slate-700 capitalize">{plan.plan}</span>
+                </div>
+                <div className="text-right">
+                  <div className="font-semibold text-slate-800">${parseFloat(plan.mrr).toFixed(0)}/mo</div>
+                  <div className="text-xs text-slate-500">{plan.count} subscribers</div>
+                </div>
+              </div>
+            ))}
+            {(!data.subscriptions_by_plan || data.subscriptions_by_plan.length === 0) && (
+              <div className="text-center text-slate-400 py-8">No paid subscriptions yet</div>
+            )}
+          </div>
+        </ChartCard>
+      </div>
+
+      {/* Recent Payments */}
+      <ChartCard title="Recent Payments" subtitle="Last 20 payment transactions">
+        <div className="overflow-auto max-h-80">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="text-left py-2 text-xs text-slate-500 font-semibold">Date</th>
+                <th className="text-left py-2 text-xs text-slate-500 font-semibold">Seller</th>
+                <th className="text-left py-2 text-xs text-slate-500 font-semibold">Description</th>
+                <th className="text-right py-2 text-xs text-slate-500 font-semibold">Amount</th>
+                <th className="text-right py-2 text-xs text-slate-500 font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.recent_payments?.map((payment) => (
+                <tr key={payment.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="py-2 text-xs text-slate-600">
+                    {new Date(payment.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="py-2">
+                    <div className="text-xs font-medium text-slate-700">{payment.seller_name}</div>
+                    <div className="text-xs text-slate-400">{payment.seller_email}</div>
+                  </td>
+                  <td className="py-2 text-xs text-slate-600">{payment.description}</td>
+                  <td className="py-2 text-right text-xs font-mono font-semibold text-slate-800">
+                    ${(payment.amount_cents / 100).toFixed(2)}
+                  </td>
+                  <td className="py-2 text-right">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      payment.status === 'succeeded'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-red-100 text-red-700'
+                    }`}>
+                      {payment.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {(!data.recent_payments || data.recent_payments.length === 0) && (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-slate-400">
+                    No payments yet
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </ChartCard>
+
+      {data.failed_payments_30d > 0 && (
+        <div className="mt-6 bg-red-50 border border-red-200 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-red-700 font-semibold">
+            <span>⚠️</span>
+            <span>{data.failed_payments_30d} failed payment(s) in the last 30 days</span>
+          </div>
+          <p className="text-sm text-red-600 mt-1">
+            Review the payment history above and follow up with affected sellers.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Analytics Page ───────────────────────────────────────
 export default function Analytics() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const [activeTab, setActiveTab] = useState('performance');
+
   const defaultEnd = new Date().toISOString().split('T')[0];
   const defaultStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -152,10 +308,42 @@ export default function Analytics() {
           <h1 className="text-2xl font-bold text-slate-800">Analytics</h1>
           <p className="text-sm text-slate-500 mt-1">Platform performance and insights</p>
         </div>
-        <DateRangePicker start={start} end={end} onChange={handleDateChange} />
+        {activeTab === 'performance' && (
+          <DateRangePicker start={start} end={end} onChange={handleDateChange} />
+        )}
       </div>
 
-      {loading ? <Spinner /> : (
+      {/* Tab Navigation (Admin only sees Revenue tab) */}
+      {isAdmin && (
+        <div className="flex gap-2 mb-6 border-b border-slate-200">
+          <button
+            onClick={() => setActiveTab('performance')}
+            className={`px-4 py-2 font-medium text-sm transition-all ${
+              activeTab === 'performance'
+                ? 'text-blue-600 border-b-2 border-blue-600'
+                : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            📊 Performance
+          </button>
+          <button
+            onClick={() => setActiveTab('revenue')}
+            className={`px-4 py-2 font-medium text-sm transition-all ${
+              activeTab === 'revenue'
+                ? 'text-green-600 border-b-2 border-green-600'
+                : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            💰 Revenue
+          </button>
+        </div>
+      )}
+
+      {/* Revenue Tab Content */}
+      {activeTab === 'revenue' && isAdmin && <RevenueTab />}
+
+      {/* Performance Tab Content */}
+      {activeTab === 'performance' && loading ? <Spinner /> : activeTab === 'performance' && (
         <>
           {/* Overview stat cards */}
           {overview && (

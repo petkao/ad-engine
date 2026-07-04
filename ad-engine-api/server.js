@@ -26,6 +26,12 @@ const multer = require('multer');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const Stripe = require('stripe');
+
+// Initialize Stripe
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null;
 
 // ── EMAIL RATE LIMITING ───────────────────────────────────────
 // Strict rate limits for routes that trigger outbound emails
@@ -232,6 +238,130 @@ function ensureGeoLogTables() {
     });
   }
   return geoLogTablesReady;
+}
+
+// ── STRIPE SUBSCRIPTIONS TABLE ────────────────────────────────
+let subscriptionsTableReady;
+
+function ensureSubscriptionsTable() {
+  if (!subscriptionsTableReady) {
+    subscriptionsTableReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        id SERIAL PRIMARY KEY,
+        seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
+        stripe_customer_id VARCHAR(255),
+        stripe_subscription_id VARCHAR(255),
+        plan VARCHAR(20) DEFAULT 'free',
+        status VARCHAR(20) DEFAULT 'active',
+        impressions_included INTEGER DEFAULT 100,
+        impression_overage_rate DECIMAL(10,4) DEFAULT 0.25,
+        current_period_start TIMESTAMPTZ,
+        current_period_end TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_seller_id
+        ON subscriptions (seller_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer_id
+        ON subscriptions (stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_stripe_subscription_id
+        ON subscriptions (stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL;
+
+      -- Payment history table for tracking all payments
+      CREATE TABLE IF NOT EXISTS payment_history (
+        id SERIAL PRIMARY KEY,
+        seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
+        stripe_invoice_id VARCHAR(255),
+        amount_cents INTEGER,
+        currency VARCHAR(3) DEFAULT 'usd',
+        status VARCHAR(20),
+        description TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_payment_history_seller_id
+        ON payment_history (seller_id, created_at DESC);
+    `).catch((err) => {
+      subscriptionsTableReady = undefined;
+      console.error('Failed to create subscriptions table:', err.message);
+    });
+  }
+  return subscriptionsTableReady;
+}
+
+// ── STRIPE PRODUCTS INITIALIZATION ────────────────────────────
+// Plan configurations
+const STRIPE_PLANS = {
+  starter: {
+    name: 'Starter',
+    price: 2900, // $29.00 in cents
+    impressions: 100,
+    description: '100 Seller Story impressions/month'
+  },
+  pro: {
+    name: 'Pro',
+    price: 9900, // $99.00 in cents
+    impressions: 500,
+    description: '500 Seller Story impressions/month'
+  },
+  enterprise: {
+    name: 'Enterprise',
+    price: 29900, // $299.00 in cents
+    impressions: -1, // unlimited
+    description: 'Unlimited Seller Story impressions/month'
+  }
+};
+
+// Cache for Stripe price IDs
+let stripePriceIds = {};
+
+async function ensureStripeProducts() {
+  if (!stripe) {
+    console.log('Stripe not configured, skipping product setup');
+    return;
+  }
+
+  try {
+    // Check for existing products
+    const existingProducts = await stripe.products.list({ active: true, limit: 100 });
+    const existingPrices = await stripe.prices.list({ active: true, limit: 100 });
+
+    for (const [planKey, planConfig] of Object.entries(STRIPE_PLANS)) {
+      const productName = `PinkCurve ${planConfig.name}`;
+      let product = existingProducts.data.find(p => p.name === productName);
+
+      if (!product) {
+        product = await stripe.products.create({
+          name: productName,
+          description: planConfig.description,
+          metadata: { plan: planKey, impressions: String(planConfig.impressions) }
+        });
+        console.log(`Created Stripe product: ${productName}`);
+      }
+
+      // Find or create price
+      let price = existingPrices.data.find(
+        p => p.product === product.id && p.unit_amount === planConfig.price && p.recurring?.interval === 'month'
+      );
+
+      if (!price) {
+        price = await stripe.prices.create({
+          product: product.id,
+          unit_amount: planConfig.price,
+          currency: 'usd',
+          recurring: { interval: 'month' },
+          metadata: { plan: planKey }
+        });
+        console.log(`Created Stripe price for ${productName}: $${planConfig.price / 100}/mo`);
+      }
+
+      stripePriceIds[planKey] = price.id;
+    }
+
+    console.log('Stripe products initialized:', stripePriceIds);
+  } catch (err) {
+    console.error('Failed to initialize Stripe products:', err.message);
+  }
 }
 
 /**
@@ -468,7 +598,14 @@ async function logAdEvent(eventType, params, req) {
 }
 
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000', credentials: true }));
-app.use(express.json());
+// Skip JSON parsing for Stripe webhook (needs raw body for signature verification)
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/stripe/webhook') {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
 app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
@@ -2820,5 +2957,419 @@ app.get('/api/analytics/buyer-trend', requireAuth, checkSellerApproved, async (r
   }
 });
 
+// ── STRIPE BILLING ROUTES ─────────────────────────────────────
+
+// Create Stripe Checkout session for subscription
+app.post('/api/stripe/create-checkout-session', requireAuth, checkSellerApproved, async (req, res) => {
+  if (!stripe) {
+    return res.status(503).json({ error: 'Stripe is not configured' });
+  }
+
+  const { plan } = req.body;
+  if (!plan || !STRIPE_PLANS[plan]) {
+    return res.status(400).json({ error: 'Invalid plan selected' });
+  }
+
+  const priceId = stripePriceIds[plan];
+  if (!priceId) {
+    return res.status(503).json({ error: 'Plan pricing not available. Please try again later.' });
+  }
+
+  try {
+    await ensureSubscriptionsTable();
+    const sellerId = req.user.seller_id;
+
+    // Get seller info
+    const sellerRes = await pool.query('SELECT id, name, email FROM sellers WHERE id = $1', [sellerId]);
+    if (!sellerRes.rows.length) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    const seller = sellerRes.rows[0];
+
+    // Check for existing subscription
+    const subRes = await pool.query('SELECT stripe_customer_id FROM subscriptions WHERE seller_id = $1', [sellerId]);
+    let customerId = subRes.rows[0]?.stripe_customer_id;
+
+    // Create Stripe customer if not exists
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: seller.email,
+        name: seller.name,
+        metadata: { seller_id: sellerId }
+      });
+      customerId = customer.id;
+
+      // Insert or update subscription record with customer ID
+      await pool.query(`
+        INSERT INTO subscriptions (seller_id, stripe_customer_id, plan, status, created_at)
+        VALUES ($1, $2, 'free', 'active', NOW())
+        ON CONFLICT (seller_id) DO UPDATE SET stripe_customer_id = $2
+      `, [sellerId, customerId]);
+    }
+
+    // Create Checkout session
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      line_items: [{
+        price: priceId,
+        quantity: 1
+      }],
+      mode: 'subscription',
+      success_url: `${process.env.CLIENT_URL || 'https://ad-engine-4da45.web.app'}?stripe=success`,
+      cancel_url: `${process.env.CLIENT_URL || 'https://ad-engine-4da45.web.app'}?stripe=cancel`,
+      metadata: {
+        seller_id: sellerId,
+        plan: plan
+      },
+      subscription_data: {
+        metadata: {
+          seller_id: sellerId,
+          plan: plan
+        }
+      }
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Stripe checkout error:', err);
+    res.status(500).json({ error: 'Failed to create checkout session' });
+  }
+});
+
+// Stripe webhook handler (NO auth - verified by Stripe signature)
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe) {
+    return res.status(503).send('Stripe not configured');
+  }
+
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  await ensureSubscriptionsTable();
+
+  try {
+    switch (event.type) {
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object;
+        const customerId = subscription.customer;
+        const planKey = subscription.metadata?.plan || 'starter';
+        const planConfig = STRIPE_PLANS[planKey] || STRIPE_PLANS.starter;
+
+        await pool.query(`
+          UPDATE subscriptions SET
+            stripe_subscription_id = $1,
+            plan = $2,
+            status = $3,
+            impressions_included = $4,
+            current_period_start = to_timestamp($5),
+            current_period_end = to_timestamp($6)
+          WHERE stripe_customer_id = $7
+        `, [
+          subscription.id,
+          planKey,
+          subscription.status === 'active' ? 'active' : subscription.status,
+          planConfig.impressions,
+          subscription.current_period_start,
+          subscription.current_period_end,
+          customerId
+        ]);
+
+        console.log(`Subscription ${event.type}: ${subscription.id} -> ${planKey}`);
+        break;
+      }
+
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object;
+        await pool.query(`
+          UPDATE subscriptions SET
+            status = 'cancelled',
+            plan = 'free',
+            impressions_included = 100
+          WHERE stripe_subscription_id = $1
+        `, [subscription.id]);
+
+        console.log(`Subscription cancelled: ${subscription.id}`);
+        break;
+      }
+
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object;
+        const customerId = invoice.customer;
+
+        // Get seller_id from subscription
+        const subRes = await pool.query(
+          'SELECT seller_id FROM subscriptions WHERE stripe_customer_id = $1',
+          [customerId]
+        );
+
+        if (subRes.rows.length) {
+          await pool.query(`
+            INSERT INTO payment_history (seller_id, stripe_invoice_id, amount_cents, currency, status, description, created_at)
+            VALUES ($1, $2, $3, $4, 'succeeded', $5, NOW())
+          `, [
+            subRes.rows[0].seller_id,
+            invoice.id,
+            invoice.amount_paid,
+            invoice.currency,
+            invoice.lines?.data?.[0]?.description || 'Subscription payment'
+          ]);
+        }
+
+        console.log(`Payment succeeded: ${invoice.id} - $${invoice.amount_paid / 100}`);
+        break;
+      }
+
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        const customerId = invoice.customer;
+
+        // Get seller info
+        const subRes = await pool.query(`
+          SELECT s.seller_id, sel.email, sel.name
+          FROM subscriptions s
+          JOIN sellers sel ON s.seller_id = sel.id
+          WHERE s.stripe_customer_id = $1
+        `, [customerId]);
+
+        if (subRes.rows.length) {
+          const seller = subRes.rows[0];
+
+          // Log failed payment
+          await pool.query(`
+            INSERT INTO payment_history (seller_id, stripe_invoice_id, amount_cents, currency, status, description, created_at)
+            VALUES ($1, $2, $3, $4, 'failed', $5, NOW())
+          `, [
+            seller.seller_id,
+            invoice.id,
+            invoice.amount_due,
+            invoice.currency,
+            'Payment failed'
+          ]);
+
+          // Send notification emails
+          const { sendPaymentFailedEmail } = require('./emailService');
+          if (typeof sendPaymentFailedEmail === 'function') {
+            await sendPaymentFailedEmail(seller.email, seller.name, invoice.amount_due / 100);
+          }
+        }
+
+        console.log(`Payment failed: ${invoice.id}`);
+        break;
+      }
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error('Webhook processing error:', err);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// Get seller's subscription details
+app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    await ensureSubscriptionsTable();
+    const sellerId = req.user.seller_id;
+
+    if (!sellerId) {
+      return res.status(400).json({ error: 'No seller account linked' });
+    }
+
+    // Get subscription
+    const subRes = await pool.query(`
+      SELECT * FROM subscriptions WHERE seller_id = $1
+    `, [sellerId]);
+
+    let subscription = subRes.rows[0];
+
+    // Create free subscription if none exists
+    if (!subscription) {
+      await pool.query(`
+        INSERT INTO subscriptions (seller_id, plan, status, impressions_included, created_at)
+        VALUES ($1, 'free', 'active', 100, NOW())
+      `, [sellerId]);
+
+      subscription = {
+        seller_id: sellerId,
+        plan: 'free',
+        status: 'active',
+        impressions_included: 100,
+        impression_overage_rate: 0.25
+      };
+    }
+
+    // Get impressions used this billing period
+    const periodStart = subscription.current_period_start || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const impressionsRes = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM ad_events
+      WHERE seller_id = $1
+      AND event_type = 'impression'
+      AND timestamp >= $2
+    `, [sellerId, periodStart]);
+
+    const impressionsUsed = parseInt(impressionsRes.rows[0]?.count || 0, 10);
+    const impressionsIncluded = subscription.impressions_included || 100;
+    const impressionsRemaining = impressionsIncluded === -1 ? -1 : Math.max(0, impressionsIncluded - impressionsUsed);
+    const overageCount = impressionsIncluded === -1 ? 0 : Math.max(0, impressionsUsed - impressionsIncluded);
+    const overageRate = parseFloat(subscription.impression_overage_rate || 0.25);
+    const overageAmount = overageCount * overageRate;
+
+    res.json({
+      ...subscription,
+      impressions_used: impressionsUsed,
+      impressions_remaining: impressionsRemaining,
+      overage_count: overageCount,
+      overage_amount: overageAmount,
+      plans: STRIPE_PLANS
+    });
+  } catch (err) {
+    console.error('Get subscription error:', err);
+    res.status(500).json({ error: 'Failed to get subscription details' });
+  }
+});
+
+// Get payment history for seller
+app.get('/api/seller/payments', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const sellerId = req.user.seller_id;
+    if (!sellerId) {
+      return res.status(400).json({ error: 'No seller account linked' });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT * FROM payment_history
+      WHERE seller_id = $1
+      ORDER BY created_at DESC
+      LIMIT 50
+    `, [sellerId]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Get payments error:', err);
+    res.status(500).json({ error: 'Failed to get payment history' });
+  }
+});
+
+// Admin: Get revenue analytics
+app.get('/api/admin/revenue', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await ensureSubscriptionsTable();
+
+    // Total MRR by plan
+    const mrrRes = await pool.query(`
+      SELECT
+        plan,
+        COUNT(*) as count,
+        SUM(CASE
+          WHEN plan = 'starter' THEN 29
+          WHEN plan = 'pro' THEN 99
+          WHEN plan = 'enterprise' THEN 299
+          ELSE 0
+        END) as mrr
+      FROM subscriptions
+      WHERE status = 'active' AND plan != 'free'
+      GROUP BY plan
+    `);
+
+    // Calculate totals
+    const totalMrr = mrrRes.rows.reduce((sum, r) => sum + parseFloat(r.mrr || 0), 0);
+    const totalActiveSubscriptions = mrrRes.rows.reduce((sum, r) => sum + parseInt(r.count || 0, 10), 0);
+
+    // Recent payments
+    const paymentsRes = await pool.query(`
+      SELECT ph.*, s.name as seller_name, s.email as seller_email
+      FROM payment_history ph
+      JOIN sellers s ON ph.seller_id = s.id
+      ORDER BY ph.created_at DESC
+      LIMIT 20
+    `);
+
+    // Failed payments count
+    const failedRes = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM payment_history
+      WHERE status = 'failed'
+      AND created_at > NOW() - INTERVAL '30 days'
+    `);
+
+    // Subscriptions by plan for chart
+    const planDistRes = await pool.query(`
+      SELECT plan, COUNT(*) as count
+      FROM subscriptions
+      WHERE status = 'active'
+      GROUP BY plan
+    `);
+
+    res.json({
+      total_mrr: totalMrr,
+      total_active_subscriptions: totalActiveSubscriptions,
+      subscriptions_by_plan: mrrRes.rows,
+      plan_distribution: planDistRes.rows,
+      recent_payments: paymentsRes.rows,
+      failed_payments_30d: parseInt(failedRes.rows[0]?.count || 0, 10)
+    });
+  } catch (err) {
+    console.error('Admin revenue error:', err);
+    res.status(500).json({ error: 'Failed to get revenue analytics' });
+  }
+});
+
+// Cancel subscription (for seller portal)
+app.post('/api/seller/subscription/cancel', requireAuth, checkSellerApproved, async (req, res) => {
+  if (!stripe) {
+    return res.status(503).json({ error: 'Stripe is not configured' });
+  }
+
+  try {
+    const sellerId = req.user.seller_id;
+    const subRes = await pool.query(
+      'SELECT stripe_subscription_id FROM subscriptions WHERE seller_id = $1',
+      [sellerId]
+    );
+
+    const stripeSubId = subRes.rows[0]?.stripe_subscription_id;
+    if (!stripeSubId) {
+      return res.status(400).json({ error: 'No active subscription to cancel' });
+    }
+
+    // Cancel at period end (don't immediately revoke access)
+    await stripe.subscriptions.update(stripeSubId, {
+      cancel_at_period_end: true
+    });
+
+    res.json({ success: true, message: 'Subscription will be cancelled at the end of the billing period' });
+  } catch (err) {
+    console.error('Cancel subscription error:', err);
+    res.status(500).json({ error: 'Failed to cancel subscription' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Ad Engine API running on http://localhost:${PORT}`));
+
+// Initialize tables and Stripe products before starting server
+async function startServer() {
+  try {
+    await ensureGeoLogTables();
+    await ensureSubscriptionsTable();
+    await ensureBillingSupportTicketsTable();
+    await ensureStripeProducts();
+    console.log('Database tables and Stripe products initialized');
+  } catch (err) {
+    console.error('Initialization error:', err);
+  }
+
+  app.listen(PORT, () => console.log(`Ad Engine API running on http://localhost:${PORT}`));
+}
+
+startServer();

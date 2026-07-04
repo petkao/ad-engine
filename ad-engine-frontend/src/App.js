@@ -15,15 +15,17 @@ import BuyerLanding from './pages/BuyerLanding';
 import VerifyEmail from './pages/VerifyEmail';
 import PendingApproval from './pages/PendingApproval';
 import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
+import Billing from './pages/Billing';
 
 // Navigation items with role-based access
-// Sellers can ONLY see: Dashboard, Products, Ads, Analytics
+// Sellers can ONLY see: Dashboard, Products, Ads, Analytics, Billing
 // Admins can see all pages
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
   { id: 'analytics', label: 'Analytics', icon: '📊', roles: ['admin', 'seller'] },
+  { id: 'billing', label: 'Billing', icon: '💳', roles: ['seller'] },
   { id: 'pending', label: 'Pending Approval', icon: '⏳', roles: ['admin'], badge: true },
   { id: 'sellers', label: 'Sellers', icon: '🏪', roles: ['admin'] },
   { id: 'buyers', label: 'Buyers', icon: '👥', roles: ['admin'] },
@@ -35,7 +37,7 @@ const ALL_NAV = [
 const ADMIN_ONLY_PAGES = ['pending', 'sellers', 'buyers', 'events', 'geo'];
 
 const PAGES = {
-  dashboard: Dashboard, analytics: Analytics,
+  dashboard: Dashboard, analytics: Analytics, billing: Billing,
   pending: PendingApproval, sellers: Sellers, products: Products,
   ads: Ads, buyers: Buyers, events: AdEventLog, geo: GeoVerification,
 };

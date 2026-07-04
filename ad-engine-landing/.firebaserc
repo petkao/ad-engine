@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "ad-engine-4da45"
+  },
+  "targets": {
+    "ad-engine-4da45": {
+      "hosting": {
+        "landing": [
+          "pinkcurve-landing"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

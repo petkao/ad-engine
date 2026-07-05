@@ -133,12 +133,15 @@ def setup_agent():
 
     SYSTEM_PROMPT = (
         "You are PinkCurve's Video Ad Assistant. Help users discover video ads "
-        "matching what they're shopping for. Use the search_video_ads tool when "
-        "the user describes what they want, or get_featured_video_ads if they just "
-        "want to browse. If the user asks to email a video ad to someone, use the "
-        "send_video_ad_via_email tool with the most relevant video_url found so far "
-        "and ask for their email address if not provided. Always include the video_url "
-        "in your response so the user can see it clearly. Keep responses concise."
+        "matching what they're shopping for.\n\n"
+        "Available tools:\n"
+        "- search_video_ads_for_buyer: Search for video ads matching a buyer query\n"
+        "- rank_ads_for_buyer: Get ranked ads for a general query\n"
+        "- get_ad_by_id: Fetch details for a specific ad\n"
+        "- send_video_ad_via_email: Email a video ad to someone\n\n"
+        "When the user describes what they want, use search_video_ads_for_buyer. "
+        "Always include the video URL (media_url) in your response so users can watch it. "
+        "Present results clearly with headline, price, and seller name. Keep responses concise."
     )
 
     def _call_mcp_tool_sync(tool_name: str, arguments: dict) -> str:
@@ -170,16 +173,10 @@ def setup_agent():
                 timeout=30.0
             )
 
-            # Debug: log init response
-            st.sidebar.write(f"Init status: {init_response.status_code}")
-
             # Get session ID from response headers (required for tool calls)
             session_id = init_response.headers.get("mcp-session-id")
             if not session_id:
-                st.sidebar.error("No mcp-session-id in response")
-                return f"MCP Error: No session ID returned. Status: {init_response.status_code}, Body: {init_response.text[:200]}"
-
-            st.sidebar.write(f"Session ID: {session_id[:16]}...")
+                return f"MCP Error: No session ID returned. Status: {init_response.status_code}"
 
             # Call the tool with session ID
             tool_payload = {
@@ -203,11 +200,8 @@ def setup_agent():
                 timeout=30.0
             )
 
-            st.sidebar.write(f"Tool status: {tool_response.status_code}")
-
             # Parse tool response (SSE format)
             tool_text = tool_response.text
-            st.sidebar.write(f"Tool response: {tool_text[:300]}...")
 
             if "event: message" in tool_text:
                 for line in tool_text.split("\n"):
@@ -221,19 +215,23 @@ def setup_agent():
             return f"Unexpected MCP response: {tool_text[:200]}"
 
         except Exception as e:
-            st.sidebar.error(f"MCP Exception: {str(e)}")
             return f"MCP call failed: {str(e)}"
 
     @tool
-    def search_video_ads(query: str) -> str:
-        """Search PinkCurve for video ads matching a buyer's intent/query.
-        Returns ad details including headline and video URL."""
+    def search_video_ads_for_buyer(query: str) -> str:
+        """Search PinkCurve for video ads matching a buyer's shopping intent.
+        Returns video ad details including headline, price, video URL, and seller."""
         return _call_mcp_tool_sync("search_video_ads_for_buyer", {"query": query, "limit": 5})
 
     @tool
-    def get_featured_video_ads() -> str:
-        """Get currently featured video ads from PinkCurve (no specific query)."""
-        return _call_mcp_tool_sync("rank_ads_for_buyer", {"query": "featured products", "limit": 5})
+    def rank_ads_for_buyer(query: str) -> str:
+        """Get ranked ads for a buyer query. Use for general browsing or broad searches."""
+        return _call_mcp_tool_sync("rank_ads_for_buyer", {"query": query, "limit": 5})
+
+    @tool
+    def get_ad_by_id(ad_id: str) -> str:
+        """Fetch details for a specific ad by its ID."""
+        return _call_mcp_tool_sync("get_ad_by_id", {"ad_id": ad_id})
 
     @tool
     def send_video_ad_via_email(to_email: str, video_url: str, headline: str = "") -> str:
@@ -252,7 +250,7 @@ def setup_agent():
         except Exception as e:
             return f"Failed to reach Email Agent: {e}"
 
-    tools = [search_video_ads, get_featured_video_ads, send_video_ad_via_email]
+    tools = [search_video_ads_for_buyer, rank_ads_for_buyer, get_ad_by_id, send_video_ad_via_email]
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,

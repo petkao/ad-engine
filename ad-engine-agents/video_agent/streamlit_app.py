@@ -5,13 +5,7 @@ A video ad discovery assistant powered by LangGraph and MCP.
 """
 
 import re
-import asyncio
 import traceback
-
-# nest_asyncio allows asyncio.run() inside Streamlit's event loop
-import nest_asyncio
-nest_asyncio.apply()
-
 import streamlit as st
 
 # Page configuration - must be first Streamlit command
@@ -130,8 +124,6 @@ def setup_agent():
         from langchain_core.messages import SystemMessage
         from langgraph.graph import StateGraph, MessagesState, START, END
         from langgraph.prebuilt import ToolNode
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
     except ImportError as e:
         return None, f"Missing dependency: {e}"
 
@@ -149,24 +141,91 @@ def setup_agent():
         "in your response so the user can see it clearly. Keep responses concise."
     )
 
-    async def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
-        """Call a tool on the remote PinkCurve MCP server."""
-        async with streamablehttp_client(MCP_URL) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(tool_name, arguments)
-                return result.content[0].text if result.content else ""
+    def _call_mcp_tool_sync(tool_name: str, arguments: dict) -> str:
+        """Call MCP tool using direct HTTP (more reliable than async MCP client in Streamlit)."""
+        import json
+        import uuid
+
+        # Use direct HTTP calls to MCP server (StreamableHTTP protocol)
+        try:
+            # Initialize session
+            init_payload = {
+                "jsonrpc": "2.0",
+                "id": str(uuid.uuid4()),
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pinkcurve-streamlit", "version": "1.0"}
+                }
+            }
+
+            init_response = httpx.post(
+                MCP_URL,
+                json=init_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                },
+                timeout=30.0
+            )
+
+            # Parse SSE response
+            init_text = init_response.text
+            if "event: message" in init_text:
+                # Extract JSON from SSE format
+                for line in init_text.split("\n"):
+                    if line.startswith("data: "):
+                        init_data = json.loads(line[6:])
+                        break
+
+            # Call the tool
+            tool_payload = {
+                "jsonrpc": "2.0",
+                "id": str(uuid.uuid4()),
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
+            }
+
+            tool_response = httpx.post(
+                MCP_URL,
+                json=tool_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                },
+                timeout=30.0
+            )
+
+            # Parse tool response
+            tool_text = tool_response.text
+            if "event: message" in tool_text:
+                for line in tool_text.split("\n"):
+                    if line.startswith("data: "):
+                        tool_data = json.loads(line[6:])
+                        if "result" in tool_data and "content" in tool_data["result"]:
+                            return tool_data["result"]["content"][0]["text"]
+                        elif "error" in tool_data:
+                            return f"MCP Error: {tool_data['error']}"
+
+            return f"Unexpected MCP response: {tool_text[:200]}"
+
+        except Exception as e:
+            return f"MCP call failed: {str(e)}"
 
     @tool
     def search_video_ads(query: str) -> str:
         """Search PinkCurve for video ads matching a buyer's intent/query.
         Returns ad details including headline and video URL."""
-        return asyncio.run(_call_mcp_tool("search_video_ads", {"query": query, "limit": 3}))
+        return _call_mcp_tool_sync("search_video_ads", {"query": query, "limit": 3})
 
     @tool
     def get_featured_video_ads() -> str:
         """Get currently featured video ads from PinkCurve (no specific query)."""
-        return asyncio.run(_call_mcp_tool("get_video_ads", {"limit": 3}))
+        return _call_mcp_tool_sync("get_video_ads", {"limit": 3})
 
     @tool
     def send_video_ad_via_email(to_email: str, video_url: str, headline: str = "") -> str:

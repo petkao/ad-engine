@@ -144,13 +144,16 @@ def setup_agent():
         "Present results clearly with headline, price, and seller name. Keep responses concise."
     )
 
-    def _call_mcp_tool_sync(tool_name: str, arguments: dict) -> str:
+    def _call_mcp_tool_sync(tool_name: str, arguments: dict, debug: bool = False) -> str:
         """Call MCP tool using direct HTTP (more reliable than async MCP client in Streamlit)."""
         import json
         import uuid
 
         # Use direct HTTP calls to MCP server (StreamableHTTP protocol)
         try:
+            if debug:
+                st.sidebar.write(f"**MCP URL:** {MCP_URL}")
+
             # Initialize session
             init_payload = {
                 "jsonrpc": "2.0",
@@ -173,10 +176,17 @@ def setup_agent():
                 timeout=30.0
             )
 
+            if debug:
+                st.sidebar.write(f"**Init status:** {init_response.status_code}")
+                st.sidebar.write(f"**Init response:** {init_response.text[:200]}...")
+
             # Get session ID from response headers (required for tool calls)
             session_id = init_response.headers.get("mcp-session-id")
             if not session_id:
-                return f"MCP Error: No session ID returned. Status: {init_response.status_code}"
+                return f"MCP Error: No session ID returned. Status: {init_response.status_code}, Response: {init_response.text[:300]}"
+
+            if debug:
+                st.sidebar.write(f"**Session ID:** {session_id}")
 
             # Call the tool with session ID
             tool_payload = {
@@ -200,6 +210,10 @@ def setup_agent():
                 timeout=30.0
             )
 
+            if debug:
+                st.sidebar.write(f"**Tool status:** {tool_response.status_code}")
+                st.sidebar.write(f"**Tool response:** {tool_response.text[:500]}...")
+
             # Parse tool response (SSE format)
             tool_text = tool_response.text
 
@@ -215,6 +229,9 @@ def setup_agent():
             return f"Unexpected MCP response: {tool_text[:200]}"
 
         except Exception as e:
+            if debug:
+                st.sidebar.error(f"**Exception:** {str(e)}")
+                st.sidebar.code(traceback.format_exc())
             return f"MCP call failed: {str(e)}"
 
     @tool
@@ -307,18 +324,116 @@ def render_message(content: str):
 
 
 # -----------------------------------------------------------------------------
+# MCP Debug Test Function
+# -----------------------------------------------------------------------------
+
+def test_mcp_connection():
+    """Standalone MCP test function for debugging."""
+    import httpx
+    import json
+    import uuid
+
+    MCP_URL = get_secret("PINKCURVE_MCP_URL")
+    st.sidebar.write(f"**MCP URL:** {MCP_URL}")
+
+    try:
+        # Initialize session
+        init_payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "pinkcurve-streamlit-test", "version": "1.0"}
+            }
+        }
+
+        init_response = httpx.post(
+            MCP_URL,
+            json=init_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
+            timeout=30.0
+        )
+
+        st.sidebar.write(f"**Init status:** {init_response.status_code}")
+        st.sidebar.write(f"**Init headers:** {dict(init_response.headers)}")
+        st.sidebar.write(f"**Init response:** {init_response.text[:300]}...")
+
+        session_id = init_response.headers.get("mcp-session-id")
+        if not session_id:
+            st.sidebar.error("No mcp-session-id in headers!")
+            return {"error": "No session ID"}
+
+        st.sidebar.success(f"**Session ID:** {session_id}")
+
+        # Call tool
+        tool_payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/call",
+            "params": {
+                "name": "search_video_ads_for_buyer",
+                "arguments": {"query": "car", "limit": 3}
+            }
+        }
+
+        tool_response = httpx.post(
+            MCP_URL,
+            json=tool_payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "mcp-session-id": session_id
+            },
+            timeout=30.0
+        )
+
+        st.sidebar.write(f"**Tool status:** {tool_response.status_code}")
+        st.sidebar.write(f"**Tool response:**")
+        st.sidebar.code(tool_response.text[:800])
+
+        return {"status": "success", "response": tool_response.text[:500]}
+
+    except Exception as e:
+        st.sidebar.error(f"**Exception:** {str(e)}")
+        st.sidebar.code(traceback.format_exc())
+        return {"error": str(e)}
+
+
+# -----------------------------------------------------------------------------
 # Main App
 # -----------------------------------------------------------------------------
 
 def main():
     render_header()
 
-    # Debug: Show key prefix in sidebar (remove after debugging)
+    # Debug: Show key prefix in sidebar
     openai_key = get_secret("OPENAI_API_KEY", "")
     if openai_key:
         st.sidebar.success(f"OpenAI Key: {openai_key[:12]}...{openai_key[-4:]}")
     else:
         st.sidebar.error("OpenAI Key: NOT FOUND")
+
+    # MCP URL display
+    mcp_url = get_secret("PINKCURVE_MCP_URL", "")
+    if mcp_url:
+        st.sidebar.info(f"MCP URL: {mcp_url[:50]}...")
+    else:
+        st.sidebar.error("MCP URL: NOT FOUND")
+
+    # Test MCP button
+    if st.sidebar.button("🧪 Test MCP Connection"):
+        with st.sidebar:
+            with st.spinner("Testing MCP..."):
+                result = test_mcp_connection()
+            if "error" in result:
+                st.error(f"Test failed: {result['error']}")
+            else:
+                st.success("MCP connection working!")
 
     # Check for required secrets
     missing_secrets = check_required_secrets()

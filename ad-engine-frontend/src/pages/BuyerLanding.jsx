@@ -290,12 +290,28 @@ export default function BuyerLanding() {
           <span style={{ fontSize: '18px', fontWeight: '700', background: 'linear-gradient(135deg, #ec4899, #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', fontFamily: '"DM Serif Display", serif' }}>PinkCurve</span>
           <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '8px' }}>by Peter Kao Associates</span>
         </div>
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px', color: '#94a3b8' }}>🔒 Privacy-first</span>
-          <a href="/login" style={{ fontSize: '13px', color: '#64748b', textDecoration: 'none', fontWeight: '500' }}>
-            Seller Sign In
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <a href="/login" style={{
+            fontSize: '13px',
+            color: '#ec4899',
+            textDecoration: 'none',
+            fontWeight: '600',
+            border: '2px solid #ec4899',
+            padding: '8px 16px',
+            borderRadius: '8px',
+            transition: 'all 0.2s'
+          }}>
+            🏪 Seller Portal
           </a>
-          <a href="/register" style={{ fontSize: '13px', color: 'white', textDecoration: 'none', fontWeight: '600', background: 'linear-gradient(135deg, #ec4899, #a855f7)', padding: '6px 14px', borderRadius: '8px' }}>
+          <a href="/register" style={{
+            fontSize: '13px',
+            color: 'white',
+            textDecoration: 'none',
+            fontWeight: '600',
+            background: 'linear-gradient(135deg, #ec4899, #a855f7)',
+            padding: '8px 16px',
+            borderRadius: '8px'
+          }}>
             Start Selling →
           </a>
         </div>
@@ -424,11 +440,16 @@ export default function BuyerLanding() {
       </div>
 
       {/* Footer */}
-      <footer style={{ background: 'white', borderTop: '1px solid #f1f5f9', padding: '24px', textAlign: 'center', marginTop: '48px' }}>
-        <div style={{ fontSize: '13px', color: '#94a3b8' }}>
+      <footer style={{ background: 'white', borderTop: '1px solid #f1f5f9', padding: '32px 24px', textAlign: 'center', marginTop: '48px' }}>
+        <div style={{ marginBottom: '16px' }}>
+          <span style={{ fontSize: '14px', color: '#64748b' }}>Are you a seller? </span>
+          <a href="/login" style={{ fontSize: '14px', color: '#ec4899', textDecoration: 'none', fontWeight: '600' }}>Sign in here</a>
+          <span style={{ fontSize: '14px', color: '#64748b' }}> or </span>
+          <a href="/register" style={{ fontSize: '14px', color: '#ec4899', textDecoration: 'none', fontWeight: '600' }}>create an account →</a>
+        </div>
+        <div style={{ fontSize: '12px', color: '#94a3b8' }}>
           <strong style={{ background: 'linear-gradient(135deg, #ec4899, #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PinkCurve</strong>
-          <span style={{ color: '#94a3b8' }}> by Peter Kao Associates · Intent-driven · Privacy-first · Trusted · </span>
-          <a href="/register" style={{ color: '#ec4899', textDecoration: 'none' }}>Become a Seller →</a>
+          <span> by Peter Kao Associates · Intent-driven · Privacy-first · Trusted</span>
         </div>
       </footer>
 

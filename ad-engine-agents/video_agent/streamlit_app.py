@@ -137,6 +137,7 @@ def setup_agent():
 
     MCP_URL = get_secret("PINKCURVE_MCP_URL")
     EMAIL_AGENT_URL = get_secret("EMAIL_AGENT_A2A_URL", "http://localhost:9001")
+    OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 
     SYSTEM_PROMPT = (
         "You are PinkCurve's Video Ad Assistant. Help users discover video ads "
@@ -185,7 +186,11 @@ def setup_agent():
             return f"Failed to reach Email Agent: {e}"
 
     tools = [search_video_ads, get_featured_video_ads, send_video_ad_via_email]
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind_tools(tools)
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0,
+        api_key=OPENAI_API_KEY
+    ).bind_tools(tools)
 
     def call_model(state: MessagesState):
         messages = state["messages"]
@@ -242,6 +247,13 @@ def render_message(content: str):
 
 def main():
     render_header()
+
+    # Debug: Show key prefix in sidebar (remove after debugging)
+    openai_key = get_secret("OPENAI_API_KEY", "")
+    if openai_key:
+        st.sidebar.success(f"OpenAI Key: {openai_key[:12]}...{openai_key[-4:]}")
+    else:
+        st.sidebar.error("OpenAI Key: NOT FOUND")
 
     # Check for required secrets
     missing_secrets = check_required_secrets()

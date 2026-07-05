@@ -1,10 +1,11 @@
 """
 PinkCurve Video Discovery - Streamlit Community Cloud App
 
-A video ad discovery assistant powered by LangGraph and MCP.
+A video ad discovery assistant powered by LangGraph with direct API calls.
 """
 
 import re
+import json
 import traceback
 import streamlit as st
 
@@ -16,8 +17,11 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# Configuration & Secrets Handling
+# Configuration
 # -----------------------------------------------------------------------------
+
+API_BASE_URL = "https://ad-engine-api-610270819686.us-west1.run.app"
+
 
 def get_secret(key: str, default: str = None) -> str:
     """Get a secret from st.secrets or environment, with fallback."""
@@ -31,7 +35,7 @@ def get_secret(key: str, default: str = None) -> str:
 
 def check_required_secrets() -> list:
     """Check for required secrets and return list of missing ones."""
-    required = ["OPENAI_API_KEY", "PINKCURVE_MCP_URL"]
+    required = ["OPENAI_API_KEY"]
     missing = []
     for key in required:
         if not get_secret(key):
@@ -81,8 +85,6 @@ def render_missing_secrets_error(missing: list):
     for key in missing:
         if key == "OPENAI_API_KEY":
             st.markdown(f"- **`{key}`**: Your OpenAI API key")
-        elif key == "PINKCURVE_MCP_URL":
-            st.markdown(f"- **`{key}`**: The PinkCurve MCP server URL")
     st.markdown("""
 ---
 ### Configure in Streamlit Cloud:
@@ -90,9 +92,37 @@ def render_missing_secrets_error(missing: list):
 2. Add in TOML format:
 ```toml
 OPENAI_API_KEY = "sk-..."
-PINKCURVE_MCP_URL = "https://ad-engine-mcp-610270819686.us-west1.run.app/mcp"
 ```
     """)
+
+
+# -----------------------------------------------------------------------------
+# Direct API Calls (bypassing MCP for reliability)
+# -----------------------------------------------------------------------------
+
+def format_video_ads(ads: list, limit: int = 6) -> list:
+    """Filter to video ads and format for display."""
+    video_ads = [
+        ad for ad in ads
+        if ad.get("format") == "video" and ad.get("media_url")
+    ][:limit]
+
+    return [
+        {
+            "id": ad.get("id"),
+            "headline": ad.get("headline"),
+            "body_copy": ad.get("body_copy"),
+            "video_url": ad.get("media_url"),
+            "thumbnail_url": ad.get("thumbnail_url"),
+            "product_title": ad.get("product_title"),
+            "price": ad.get("price"),
+            "currency": ad.get("currency", "USD"),
+            "category": ad.get("category"),
+            "seller_name": ad.get("seller_name"),
+            "intent_tags": ad.get("intent_tags", []),
+        }
+        for ad in video_ads
+    ]
 
 
 # -----------------------------------------------------------------------------
@@ -111,14 +141,13 @@ def setup_agent():
     except ImportError as e:
         return None, f"Missing dependency: {e}"
 
-    MCP_URL = get_secret("PINKCURVE_MCP_URL")
     OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 
     SYSTEM_PROMPT = """You are PinkCurve's Video Discovery Agent. Help users find video ads from sellers.
 
 INTENT ROUTING - Choose the right tool based on user intent:
 
-1. SPECIFIC SEARCH (use search_video_ads_for_buyer):
+1. SPECIFIC SEARCH (use search_video_ads):
    - User describes what they're looking for
    - Examples: "I need a dash cam", "looking for jewelry gifts", "car accessories"
 
@@ -140,104 +169,83 @@ RESPONSE FORMAT:
 - Keep responses concise but informative
 - If no results, suggest trying a different search or browsing featured ads"""
 
-    def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
-        """Call MCP tool using streaming - break on first data line to avoid hanging."""
-        import json
-
-        try:
-            # Step 1: Initialize session
-            init_payload = {
-                "jsonrpc": "2.0",
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "streamlit", "version": "1.0"}
-                },
-                "id": 1
-            }
-
-            init_response = httpx.post(
-                MCP_URL,
-                json=init_payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                },
-                timeout=10.0
-            )
-
-            session_id = init_response.headers.get("mcp-session-id", "")
-            if not session_id:
-                return f"MCP Error: No session ID. Status: {init_response.status_code}"
-
-            # Step 2: Call tool with streaming - break on first data line
-            tool_payload = {
-                "jsonrpc": "2.0",
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-                "id": 2
-            }
-
-            with httpx.stream(
-                "POST",
-                MCP_URL,
-                json=tool_payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "mcp-session-id": session_id
-                },
-                timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
-            ) as response:
-                for line in response.iter_lines():
-                    if line.startswith("data: "):
-                        try:
-                            data = json.loads(line[6:])
-                            if "result" in data and "content" in data["result"]:
-                                return data["result"]["content"][0]["text"]
-                            elif "error" in data:
-                                return f"MCP Error: {data['error']}"
-                        except json.JSONDecodeError:
-                            continue
-                        # Break after first valid data line - this is the key fix!
-                        break
-
-            return "MCP Error: No valid response received"
-
-        except httpx.TimeoutException:
-            return "MCP Error: Request timed out"
-        except Exception as e:
-            return f"MCP Error: {str(e)}"
-
     @tool
-    def search_video_ads_for_buyer(query: str) -> str:
+    def search_video_ads(query: str) -> str:
         """Search for video ads matching a buyer's shopping intent using semantic matching.
         Use when user describes what they're looking for."""
-        return _call_mcp_tool("search_video_ads_for_buyer", {"query": query, "limit": 6})
+        try:
+            response = httpx.post(
+                f"{API_BASE_URL}/api/buyer/semantic-match",
+                json={"query": query, "limit": 10},
+                timeout=10.0
+            )
+            data = response.json()
+            ads = data.get("matches", [])
+            video_ads = format_video_ads(ads, limit=6)
+
+            if not video_ads:
+                return f'No video ads found matching "{query}". Try browsing featured ads instead.'
+
+            return json.dumps({"query": query, "count": len(video_ads), "ads": video_ads}, indent=2)
+        except Exception as e:
+            return f"Error searching ads: {str(e)}"
 
     @tool
     def get_featured_video_ads() -> str:
         """Get currently featured video ads. Use for browsing when user has no specific intent."""
-        return _call_mcp_tool("get_featured_video_ads", {"limit": 10})
+        try:
+            response = httpx.get(
+                f"{API_BASE_URL}/api/buyer/featured",
+                timeout=10.0
+            )
+            ads = response.json()
+            video_ads = format_video_ads(ads, limit=10)
+
+            if not video_ads:
+                return "No video ads currently available."
+
+            return json.dumps({"featured": True, "count": len(video_ads), "ads": video_ads}, indent=2)
+        except Exception as e:
+            return f"Error fetching featured ads: {str(e)}"
 
     @tool
     def get_video_ads_by_category(category: str) -> str:
         """Get video ads filtered by category. Use when user asks for a specific category."""
-        return _call_mcp_tool("get_video_ads_by_category", {"category": category, "limit": 6})
+        try:
+            response = httpx.get(
+                f"{API_BASE_URL}/api/buyer/featured",
+                timeout=10.0
+            )
+            ads = response.json()
+            # Filter by category
+            category_ads = [
+                ad for ad in ads
+                if ad.get("category", "").lower() == category.lower()
+                or category.lower() in ad.get("category", "").lower()
+            ]
+            video_ads = format_video_ads(category_ads, limit=6)
+
+            if not video_ads:
+                return f'No video ads found in category "{category}". Try listing categories to see what\'s available.'
+
+            return json.dumps({"category": category, "count": len(video_ads), "ads": video_ads}, indent=2)
+        except Exception as e:
+            return f"Error fetching ads by category: {str(e)}"
 
     @tool
     def list_categories() -> str:
         """List all available ad categories. Use to help users discover what's available."""
-        return _call_mcp_tool("list_categories", {})
+        try:
+            response = httpx.get(
+                f"{API_BASE_URL}/api/buyer/categories",
+                timeout=10.0
+            )
+            categories = response.json()
+            return json.dumps({"categories": categories}, indent=2)
+        except Exception as e:
+            return f"Error fetching categories: {str(e)}"
 
-    @tool
-    def get_ad_details(ad_id: str) -> str:
-        """Get detailed information about a specific ad by ID."""
-        return _call_mcp_tool("get_ad_details", {"ad_id": ad_id})
-
-    tools = [search_video_ads_for_buyer, get_featured_video_ads, get_video_ads_by_category,
-             list_categories, get_ad_details]
+    tools = [search_video_ads, get_featured_video_ads, get_video_ads_by_category, list_categories]
 
     llm = ChatOpenAI(
         model="gpt-4o-mini",
@@ -293,17 +301,15 @@ def run_video_agent_with_progress(graph, user_message: str, status_placeholder) 
     start_time = time.time()
     while thread.is_alive():
         elapsed = time.time() - start_time
-        if elapsed < 5:
+        if elapsed < 3:
             status_placeholder.markdown("🔍 Searching PinkCurve video ads...")
-        elif elapsed < 10:
-            status_placeholder.markdown("🔍 Still searching...")
-        elif elapsed < 20:
-            status_placeholder.markdown("🔍 Almost there...")
+        elif elapsed < 8:
+            status_placeholder.markdown("🔍 Processing results...")
         else:
-            status_placeholder.markdown("🔍 Taking longer than expected...")
+            status_placeholder.markdown("🔍 Almost there...")
 
         try:
-            status, data = result_queue.get(timeout=0.5)
+            status, data = result_queue.get(timeout=0.3)
             status_placeholder.empty()
             if status == "success":
                 return data, None

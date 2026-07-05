@@ -22,12 +22,10 @@ st.set_page_config(
 def get_secret(key: str, default: str = None) -> str:
     """Get a secret from st.secrets or environment, with fallback."""
     import os
-    # Try st.secrets first (Streamlit Cloud)
     try:
         return st.secrets[key]
     except (KeyError, FileNotFoundError):
         pass
-    # Fall back to environment variable
     return os.environ.get(key, default)
 
 
@@ -66,9 +64,6 @@ def render_header():
         font-size: 1rem;
         margin-top: 0.5rem;
     }
-    .video-container {
-        margin-top: 1rem;
-    }
     </style>
     <div class="pinkcurve-header">
         <p class="pinkcurve-title">🎬 PinkCurve Video Discovery</p>
@@ -82,37 +77,26 @@ def render_header():
 def render_missing_secrets_error(missing: list):
     """Render helpful error message for missing secrets."""
     st.error("⚠️ Missing Required Configuration")
-    st.markdown("""
-    This app requires the following secrets to be configured:
-    """)
-
+    st.markdown("This app requires the following secrets to be configured:")
     for key in missing:
         if key == "OPENAI_API_KEY":
-            st.markdown(f"- **`{key}`**: Your OpenAI API key (get one at [platform.openai.com](https://platform.openai.com/api-keys))")
+            st.markdown(f"- **`{key}`**: Your OpenAI API key")
         elif key == "PINKCURVE_MCP_URL":
             st.markdown(f"- **`{key}`**: The PinkCurve MCP server URL")
-
     st.markdown("""
-    ---
-    ### How to Configure Secrets
-
-    **For Streamlit Community Cloud:**
-    1. Go to your app settings
-    2. Click "Secrets" in the sidebar
-    3. Add your secrets in TOML format:
-
-    ```toml
-    OPENAI_API_KEY = "sk-..."
-    PINKCURVE_MCP_URL = "https://your-api-url/mcp"
-    ```
-
-    **For local development:**
-    Create a `.streamlit/secrets.toml` file with the same format.
+---
+### Configure in Streamlit Cloud:
+1. App settings → Secrets
+2. Add in TOML format:
+```toml
+OPENAI_API_KEY = "sk-..."
+PINKCURVE_MCP_URL = "https://ad-engine-mcp-610270819686.us-west1.run.app/mcp"
+```
     """)
 
 
 # -----------------------------------------------------------------------------
-# Video Agent Logic (adapted from graph.py)
+# Video Agent Logic
 # -----------------------------------------------------------------------------
 
 def setup_agent():
@@ -128,47 +112,53 @@ def setup_agent():
         return None, f"Missing dependency: {e}"
 
     MCP_URL = get_secret("PINKCURVE_MCP_URL")
-    EMAIL_AGENT_URL = get_secret("EMAIL_AGENT_A2A_URL", "http://localhost:9001")
     OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 
-    SYSTEM_PROMPT = (
-        "You are PinkCurve's Video Ad Assistant. Help users discover video ads "
-        "matching what they're shopping for.\n\n"
-        "Available tools:\n"
-        "- search_video_ads_for_buyer: Search for video ads matching a buyer query\n"
-        "- rank_ads_for_buyer: Get ranked ads for a general query\n"
-        "- get_ad_by_id: Fetch details for a specific ad\n"
-        "- send_video_ad_via_email: Email a video ad to someone\n\n"
-        "When the user describes what they want, use search_video_ads_for_buyer. "
-        "Always include the video URL (media_url) in your response so users can watch it. "
-        "Present results clearly with headline, price, and seller name. Keep responses concise."
-    )
+    SYSTEM_PROMPT = """You are PinkCurve's Video Discovery Agent. Help users find video ads from sellers.
 
-    def _call_mcp_tool_sync(tool_name: str, arguments: dict, debug: bool = False) -> str:
-        """Call MCP tool using direct HTTP (more reliable than async MCP client in Streamlit)."""
+INTENT ROUTING - Choose the right tool based on user intent:
+
+1. SPECIFIC SEARCH (use search_video_ads_for_buyer):
+   - User describes what they're looking for
+   - Examples: "I need a dash cam", "looking for jewelry gifts", "car accessories"
+
+2. BROWSE/EXPLORE (use get_featured_video_ads):
+   - User wants to browse without specific intent
+   - Examples: "show me what you have", "any interesting products?", "just browsing"
+
+3. CATEGORY FILTER (use get_video_ads_by_category):
+   - User asks for a specific category
+   - Examples: "show me automotive products", "fashion items"
+
+4. DISCOVER CATEGORIES (use list_categories):
+   - User asks what categories exist
+   - Examples: "what categories do you have?", "what types of products?"
+
+RESPONSE FORMAT:
+- Present results clearly with headline, price, seller name
+- ALWAYS include the video_url so users can watch
+- Keep responses concise but informative
+- If no results, suggest trying a different search or browsing featured ads"""
+
+    def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
+        """Call MCP tool using direct HTTP."""
         import json
         import uuid
 
-        # Use direct HTTP calls to MCP server (StreamableHTTP protocol)
         try:
-            if debug:
-                st.sidebar.write(f"**MCP URL:** {MCP_URL}")
-
             # Initialize session
-            init_payload = {
-                "jsonrpc": "2.0",
-                "id": str(uuid.uuid4()),
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "pinkcurve-streamlit", "version": "1.0"}
-                }
-            }
-
             init_response = httpx.post(
                 MCP_URL,
-                json=init_payload,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": str(uuid.uuid4()),
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "pinkcurve-streamlit", "version": "2.0"}
+                    }
+                },
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream"
@@ -176,32 +166,19 @@ def setup_agent():
                 timeout=30.0
             )
 
-            if debug:
-                st.sidebar.write(f"**Init status:** {init_response.status_code}")
-                st.sidebar.write(f"**Init response:** {init_response.text[:200]}...")
-
-            # Get session ID from response headers (required for tool calls)
             session_id = init_response.headers.get("mcp-session-id")
             if not session_id:
-                return f"MCP Error: No session ID returned. Status: {init_response.status_code}, Response: {init_response.text[:300]}"
+                return f"MCP Error: No session ID. Status: {init_response.status_code}"
 
-            if debug:
-                st.sidebar.write(f"**Session ID:** {session_id}")
-
-            # Call the tool with session ID
-            tool_payload = {
-                "jsonrpc": "2.0",
-                "id": str(uuid.uuid4()),
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments
-                }
-            }
-
+            # Call tool
             tool_response = httpx.post(
                 MCP_URL,
-                json=tool_payload,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": str(uuid.uuid4()),
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments}
+                },
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream",
@@ -210,64 +187,49 @@ def setup_agent():
                 timeout=30.0
             )
 
-            if debug:
-                st.sidebar.write(f"**Tool status:** {tool_response.status_code}")
-                st.sidebar.write(f"**Tool response:** {tool_response.text[:500]}...")
+            # Parse SSE response
+            for line in tool_response.text.split("\n"):
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    if "result" in data and "content" in data["result"]:
+                        return data["result"]["content"][0]["text"]
+                    elif "error" in data:
+                        return f"MCP Error: {data['error']}"
 
-            # Parse tool response (SSE format)
-            tool_text = tool_response.text
-
-            if "event: message" in tool_text:
-                for line in tool_text.split("\n"):
-                    if line.startswith("data: "):
-                        tool_data = json.loads(line[6:])
-                        if "result" in tool_data and "content" in tool_data["result"]:
-                            return tool_data["result"]["content"][0]["text"]
-                        elif "error" in tool_data:
-                            return f"MCP Error: {tool_data['error']}"
-
-            return f"Unexpected MCP response: {tool_text[:200]}"
+            return f"Unexpected response: {tool_response.text[:200]}"
 
         except Exception as e:
-            if debug:
-                st.sidebar.error(f"**Exception:** {str(e)}")
-                st.sidebar.code(traceback.format_exc())
             return f"MCP call failed: {str(e)}"
 
     @tool
     def search_video_ads_for_buyer(query: str) -> str:
-        """Search PinkCurve for video ads matching a buyer's shopping intent.
-        Returns video ad details including headline, price, video URL, and seller."""
-        return _call_mcp_tool_sync("search_video_ads_for_buyer", {"query": query, "limit": 5})
+        """Search for video ads matching a buyer's shopping intent using semantic matching.
+        Use when user describes what they're looking for."""
+        return _call_mcp_tool("search_video_ads_for_buyer", {"query": query, "limit": 6})
 
     @tool
-    def rank_ads_for_buyer(query: str) -> str:
-        """Get ranked ads for a buyer query. Use for general browsing or broad searches."""
-        return _call_mcp_tool_sync("rank_ads_for_buyer", {"query": query, "limit": 5})
+    def get_featured_video_ads() -> str:
+        """Get currently featured video ads. Use for browsing when user has no specific intent."""
+        return _call_mcp_tool("get_featured_video_ads", {"limit": 10})
 
     @tool
-    def get_ad_by_id(ad_id: str) -> str:
-        """Fetch details for a specific ad by its ID."""
-        return _call_mcp_tool_sync("get_ad_by_id", {"ad_id": ad_id})
+    def get_video_ads_by_category(category: str) -> str:
+        """Get video ads filtered by category. Use when user asks for a specific category."""
+        return _call_mcp_tool("get_video_ads_by_category", {"category": category, "limit": 6})
 
     @tool
-    def send_video_ad_via_email(to_email: str, video_url: str, headline: str = "") -> str:
-        """Send a video ad to a recipient's email by calling the Email Agent via A2A."""
-        message = f"Send {video_url} to {to_email}"
-        if headline:
-            message += f", headline: {headline}"
-        try:
-            response = httpx.post(
-                f"{EMAIL_AGENT_URL}/a2a/message",
-                json={"message": message},
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()["response"]
-        except Exception as e:
-            return f"Failed to reach Email Agent: {e}"
+    def list_categories() -> str:
+        """List all available ad categories. Use to help users discover what's available."""
+        return _call_mcp_tool("list_categories", {})
 
-    tools = [search_video_ads_for_buyer, rank_ads_for_buyer, get_ad_by_id, send_video_ad_via_email]
+    @tool
+    def get_ad_details(ad_id: str) -> str:
+        """Get detailed information about a specific ad by ID."""
+        return _call_mcp_tool("get_ad_details", {"ad_id": ad_id})
+
+    tools = [search_video_ads_for_buyer, get_featured_video_ads, get_video_ads_by_category,
+             list_categories, get_ad_details]
+
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
@@ -288,7 +250,6 @@ def setup_agent():
         return END
 
     tool_node = ToolNode(tools)
-
     builder = StateGraph(MessagesState)
     builder.add_node("agent", call_model)
     builder.add_node("tools", tool_node)
@@ -324,116 +285,11 @@ def render_message(content: str):
 
 
 # -----------------------------------------------------------------------------
-# MCP Debug Test Function
-# -----------------------------------------------------------------------------
-
-def test_mcp_connection():
-    """Standalone MCP test function for debugging."""
-    import httpx
-    import json
-    import uuid
-
-    MCP_URL = get_secret("PINKCURVE_MCP_URL")
-    st.sidebar.write(f"**MCP URL:** {MCP_URL}")
-
-    try:
-        # Initialize session
-        init_payload = {
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "pinkcurve-streamlit-test", "version": "1.0"}
-            }
-        }
-
-        init_response = httpx.post(
-            MCP_URL,
-            json=init_payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream"
-            },
-            timeout=30.0
-        )
-
-        st.sidebar.write(f"**Init status:** {init_response.status_code}")
-        st.sidebar.write(f"**Init headers:** {dict(init_response.headers)}")
-        st.sidebar.write(f"**Init response:** {init_response.text[:300]}...")
-
-        session_id = init_response.headers.get("mcp-session-id")
-        if not session_id:
-            st.sidebar.error("No mcp-session-id in headers!")
-            return {"error": "No session ID"}
-
-        st.sidebar.success(f"**Session ID:** {session_id}")
-
-        # Call tool
-        tool_payload = {
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "method": "tools/call",
-            "params": {
-                "name": "search_video_ads_for_buyer",
-                "arguments": {"query": "car", "limit": 3}
-            }
-        }
-
-        tool_response = httpx.post(
-            MCP_URL,
-            json=tool_payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-                "mcp-session-id": session_id
-            },
-            timeout=30.0
-        )
-
-        st.sidebar.write(f"**Tool status:** {tool_response.status_code}")
-        st.sidebar.write(f"**Tool response:**")
-        st.sidebar.code(tool_response.text[:800])
-
-        return {"status": "success", "response": tool_response.text[:500]}
-
-    except Exception as e:
-        st.sidebar.error(f"**Exception:** {str(e)}")
-        st.sidebar.code(traceback.format_exc())
-        return {"error": str(e)}
-
-
-# -----------------------------------------------------------------------------
 # Main App
 # -----------------------------------------------------------------------------
 
 def main():
     render_header()
-
-    # Debug: Show key prefix in sidebar
-    openai_key = get_secret("OPENAI_API_KEY", "")
-    if openai_key:
-        st.sidebar.success(f"OpenAI Key: {openai_key[:12]}...{openai_key[-4:]}")
-    else:
-        st.sidebar.error("OpenAI Key: NOT FOUND")
-
-    # MCP URL display
-    mcp_url = get_secret("PINKCURVE_MCP_URL", "")
-    if mcp_url:
-        st.sidebar.info(f"MCP URL: {mcp_url[:50]}...")
-    else:
-        st.sidebar.error("MCP URL: NOT FOUND")
-
-    # Test MCP button
-    if st.sidebar.button("🧪 Test MCP Connection"):
-        with st.sidebar:
-            with st.spinner("Testing MCP..."):
-                result = test_mcp_connection()
-            if "error" in result:
-                st.error(f"Test failed: {result['error']}")
-            else:
-                st.success("MCP connection working!")
 
     # Check for required secrets
     missing_secrets = check_required_secrets()
@@ -476,7 +332,7 @@ def main():
             if error:
                 st.error("Failed to process your request")
                 st.markdown(error)
-                response = "Sorry, I encountered an error. Please check the details above."
+                response = "Sorry, I encountered an error. Please try again."
             else:
                 render_message(response)
 

@@ -200,7 +200,7 @@ export default function BuyerLanding() {
       const res = await fetch(`${BASE}/api/buyer/semantic-match`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, category: cat, device_id: deviceId, limit: 12 }),
+        body: JSON.stringify({ query: q, category: cat, device_id: deviceId, limit: 20 }),
       });
       const data = await res.json();
       setMatches(data.matches || []);
@@ -246,7 +246,7 @@ export default function BuyerLanding() {
           body: JSON.stringify({
             query: pageContext,
             device_id: deviceId,
-            limit: 8,
+            limit: 16,
           }),
         }),
       ]);

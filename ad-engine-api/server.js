@@ -2593,7 +2593,7 @@ app.get('/api/buyer/featured', async (req, res) => {
       JOIN sellers s ON p.seller_id = s.id
       WHERE a.status = 'active'
       ORDER BY a.cost_per_match DESC
-      LIMIT 4
+      LIMIT 20
     `);
     res.json(rows);
   } catch (err) {

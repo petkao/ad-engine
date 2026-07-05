@@ -147,21 +147,21 @@ function AppShell() {
     return <PendingApprovalWaiting />;
   }
 
-  // Buyer search full-screen mode
+  // Buyer preview mode - shows actual BuyerLanding page
   if (buyerMode) return (
     <div style={{ minHeight: '100vh', overflowY: 'auto' }}>
-      <div style={{ background: 'white', borderBottom: '1px solid #f1f5f9', padding: '12px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ background: '#1e293b', padding: '10px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button onClick={() => setBuyerMode(false)}
-            style={{ color: '#64748b', fontSize: '14px', background: 'none', border: 'none', cursor: 'pointer' }}>
-            ← Back to dashboard
+            style={{ color: 'white', fontSize: '14px', background: '#3b82f6', border: 'none', cursor: 'pointer', padding: '6px 12px', borderRadius: '6px', fontWeight: '500' }}>
+            ← Back to Dashboard
           </button>
-          <span style={{ color: '#cbd5e1' }}>|</span>
-          <span style={{ fontSize: '14px', fontWeight: '500', background: 'linear-gradient(135deg, #ec4899, #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PinkCurve — Buyer Search</span>
+          <span style={{ color: '#94a3b8' }}>|</span>
+          <span style={{ fontSize: '14px', fontWeight: '500', color: '#f1f5f9' }}>👁️ Admin Preview Mode</span>
         </div>
-        <div style={{ fontSize: '12px', color: '#94a3b8' }}>🔒 Privacy-first demo</div>
+        <div style={{ fontSize: '12px', color: '#94a3b8' }}>Viewing as a buyer would see it</div>
       </div>
-      <BuyerSearch />
+      <BuyerLanding />
     </div>
   );
 
@@ -199,12 +199,12 @@ function AppShell() {
               )}
             </button>
           ))}
-          {/* Only show Buyer Search for admin users */}
+          {/* Preview as Buyer - shows BuyerLanding page */}
           {isAdmin && (
             <div className="pt-2 mt-2 border-t border-slate-100">
               <button onClick={() => setBuyerMode(true)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-green-600 hover:bg-green-50 transition-all">
-                <span>🛍️</span><span>Buyer Search</span>
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-pink-600 hover:bg-pink-50 transition-all">
+                <span>👁️</span><span>Preview as Buyer</span>
               </button>
             </div>
           )}

@@ -228,12 +228,12 @@ def setup_agent():
     def search_video_ads(query: str) -> str:
         """Search PinkCurve for video ads matching a buyer's intent/query.
         Returns ad details including headline and video URL."""
-        return _call_mcp_tool_sync("search_video_ads", {"query": query, "limit": 3})
+        return _call_mcp_tool_sync("search_video_ads_for_buyer", {"query": query, "limit": 5})
 
     @tool
     def get_featured_video_ads() -> str:
         """Get currently featured video ads from PinkCurve (no specific query)."""
-        return _call_mcp_tool_sync("get_video_ads", {"limit": 3})
+        return _call_mcp_tool_sync("rank_ads_for_buyer", {"query": "featured products", "limit": 5})
 
     @tool
     def send_video_ad_via_email(to_email: str, video_url: str, headline: str = "") -> str:

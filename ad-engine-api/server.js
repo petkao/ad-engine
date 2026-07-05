@@ -281,6 +281,9 @@ function ensureSubscriptionsTable() {
 
       CREATE INDEX IF NOT EXISTS idx_payment_history_seller_id
         ON payment_history (seller_id, created_at DESC);
+
+      -- Add stories_included column if missing
+      ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stories_included INTEGER DEFAULT 1;
     `).catch((err) => {
       subscriptionsTableReady = undefined;
       console.error('Failed to create subscriptions table:', err.message);
@@ -290,25 +293,35 @@ function ensureSubscriptionsTable() {
 }
 
 // ── STRIPE PRODUCTS INITIALIZATION ────────────────────────────
-// Plan configurations
+// Plan configurations with story limits
 const STRIPE_PLANS = {
+  free: {
+    name: 'Free',
+    price: 0,
+    stories: 1,
+    impressions: 10,
+    description: '1 Seller Story, 10 intent matches/month'
+  },
   starter: {
     name: 'Starter',
     price: 2900, // $29.00 in cents
+    stories: 5,
     impressions: 100,
-    description: '100 Seller Story impressions/month'
+    description: '5 Seller Stories, 100 intent matches/month'
   },
   pro: {
     name: 'Pro',
     price: 9900, // $99.00 in cents
+    stories: 20,
     impressions: 500,
-    description: '500 Seller Story impressions/month'
+    description: '20 Seller Stories, 500 intent matches/month'
   },
   enterprise: {
     name: 'Enterprise',
     price: 29900, // $299.00 in cents
-    impressions: -1, // unlimited
-    description: 'Unlimited Seller Story impressions/month'
+    stories: 999, // effectively unlimited
+    impressions: 999999, // effectively unlimited
+    description: 'Unlimited Seller Stories & intent matches/month'
   }
 };
 
@@ -327,6 +340,9 @@ async function ensureStripeProducts() {
     const existingPrices = await stripe.prices.list({ active: true, limit: 100 });
 
     for (const [planKey, planConfig] of Object.entries(STRIPE_PLANS)) {
+      // Skip free plan - no Stripe product needed
+      if (planKey === 'free' || planConfig.price === 0) continue;
+
       const productName = `PinkCurve ${planConfig.name}`;
       let product = existingProducts.data.find(p => p.name === productName);
 
@@ -334,7 +350,11 @@ async function ensureStripeProducts() {
         product = await stripe.products.create({
           name: productName,
           description: planConfig.description,
-          metadata: { plan: planKey, impressions: String(planConfig.impressions) }
+          metadata: {
+            plan: planKey,
+            stories: String(planConfig.stories),
+            impressions: String(planConfig.impressions)
+          }
         });
         console.log(`Created Stripe product: ${productName}`);
       }
@@ -1311,6 +1331,46 @@ app.get('/api/ads/:id', requireAuth, checkSellerApproved, async (req, res) => {
 
 app.post('/api/ads', requireAuth, checkSellerApproved, async (req, res) => {
   try {
+    const sellerId = req.user.seller_id;
+
+    // Check story limit for non-admin users
+    if (sellerId && req.user.role !== 'admin') {
+      await ensureSubscriptionsTable();
+
+      // Get seller's subscription plan
+      const subRes = await pool.query(
+        'SELECT plan, stories_included FROM subscriptions WHERE seller_id = $1',
+        [sellerId]
+      );
+
+      const subscription = subRes.rows[0];
+      const plan = subscription?.plan || 'free';
+      const planConfig = STRIPE_PLANS[plan] || STRIPE_PLANS.free;
+      const storiesLimit = subscription?.stories_included || planConfig.stories || 1;
+
+      // Count seller's active ads/stories (999+ = effectively unlimited)
+      if (storiesLimit < 999) {
+        const countRes = await pool.query(`
+          SELECT COUNT(*) as count
+          FROM ads a
+          JOIN products p ON a.product_id = p.id
+          WHERE p.seller_id = $1 AND a.status != 'deleted'
+        `, [sellerId]);
+
+        const storiesUsed = parseInt(countRes.rows[0]?.count || 0, 10);
+
+        if (storiesUsed >= storiesLimit) {
+          return res.status(403).json({
+            error: 'Story limit reached. Upgrade your plan to add more Seller Stories.',
+            upgrade_required: true,
+            stories_used: storiesUsed,
+            stories_included: storiesLimit,
+            current_plan: plan
+          });
+        }
+      }
+    }
+
     const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
     const { rows } = await pool.query(
       `INSERT INTO ads (id,product_id,format,headline,body_copy,intent_tags,cost_per_match,daily_budget,total_budget,spent,status,created_at,updated_at)
@@ -3071,34 +3131,38 @@ app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async
             plan = $2,
             status = $3,
             impressions_included = $4,
-            current_period_start = to_timestamp($5),
-            current_period_end = to_timestamp($6)
-          WHERE stripe_customer_id = $7
+            stories_included = $5,
+            current_period_start = to_timestamp($6),
+            current_period_end = to_timestamp($7)
+          WHERE stripe_customer_id = $8
         `, [
           subscription.id,
           planKey,
           subscription.status === 'active' ? 'active' : subscription.status,
           planConfig.impressions,
+          planConfig.stories,
           subscription.current_period_start,
           subscription.current_period_end,
           customerId
         ]);
 
-        console.log(`Subscription ${event.type}: ${subscription.id} -> ${planKey}`);
+        console.log(`Subscription ${event.type}: ${subscription.id} -> ${planKey} (${planConfig.stories} stories, ${planConfig.impressions} impressions)`);
         break;
       }
 
       case 'customer.subscription.deleted': {
         const subscription = event.data.object;
+        const freePlan = STRIPE_PLANS.free;
         await pool.query(`
           UPDATE subscriptions SET
             status = 'cancelled',
             plan = 'free',
-            impressions_included = 100
+            impressions_included = $2,
+            stories_included = $3
           WHERE stripe_subscription_id = $1
-        `, [subscription.id]);
+        `, [subscription.id, freePlan.impressions, freePlan.stories]);
 
-        console.log(`Subscription cancelled: ${subscription.id}`);
+        console.log(`Subscription cancelled: ${subscription.id} -> free plan`);
         break;
       }
 
@@ -3194,19 +3258,25 @@ app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req
 
     // Create free subscription if none exists
     if (!subscription) {
+      const freePlan = STRIPE_PLANS.free;
       await pool.query(`
-        INSERT INTO subscriptions (seller_id, plan, status, impressions_included, created_at)
-        VALUES ($1, 'free', 'active', 100, NOW())
-      `, [sellerId]);
+        INSERT INTO subscriptions (seller_id, plan, status, impressions_included, stories_included, created_at)
+        VALUES ($1, 'free', 'active', $2, $3, NOW())
+      `, [sellerId, freePlan.impressions, freePlan.stories]);
 
       subscription = {
         seller_id: sellerId,
         plan: 'free',
         status: 'active',
-        impressions_included: 100,
+        impressions_included: freePlan.impressions,
+        stories_included: freePlan.stories,
         impression_overage_rate: 0.25
       };
     }
+
+    // Get plan config for limits
+    const plan = subscription.plan || 'free';
+    const planConfig = STRIPE_PLANS[plan] || STRIPE_PLANS.free;
 
     // Get impressions used this billing period
     const periodStart = subscription.current_period_start || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -3219,18 +3289,36 @@ app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req
     `, [sellerId, periodStart]);
 
     const impressionsUsed = parseInt(impressionsRes.rows[0]?.count || 0, 10);
-    const impressionsIncluded = subscription.impressions_included || 100;
-    const impressionsRemaining = impressionsIncluded === -1 ? -1 : Math.max(0, impressionsIncluded - impressionsUsed);
-    const overageCount = impressionsIncluded === -1 ? 0 : Math.max(0, impressionsUsed - impressionsIncluded);
+    const impressionsIncluded = subscription.impressions_included || planConfig.impressions || 10;
+    const isUnlimitedImpressions = impressionsIncluded >= 999999;
+    const impressionsRemaining = isUnlimitedImpressions ? 999999 : Math.max(0, impressionsIncluded - impressionsUsed);
+    const overageCount = isUnlimitedImpressions ? 0 : Math.max(0, impressionsUsed - impressionsIncluded);
     const overageRate = parseFloat(subscription.impression_overage_rate || 0.25);
     const overageAmount = overageCount * overageRate;
+
+    // Get stories used (count of active ads)
+    const storiesRes = await pool.query(`
+      SELECT COUNT(*) as count
+      FROM ads a
+      JOIN products p ON a.product_id = p.id
+      WHERE p.seller_id = $1 AND a.status != 'deleted'
+    `, [sellerId]);
+
+    const storiesUsed = parseInt(storiesRes.rows[0]?.count || 0, 10);
+    const storiesIncluded = subscription.stories_included || planConfig.stories || 1;
+    const isUnlimitedStories = storiesIncluded >= 999;
+    const storiesRemaining = isUnlimitedStories ? 999 : Math.max(0, storiesIncluded - storiesUsed);
 
     res.json({
       ...subscription,
       impressions_used: impressionsUsed,
+      impressions_included: impressionsIncluded,
       impressions_remaining: impressionsRemaining,
       overage_count: overageCount,
       overage_amount: overageAmount,
+      stories_used: storiesUsed,
+      stories_included: storiesIncluded,
+      stories_remaining: storiesRemaining,
       plans: STRIPE_PLANS
     });
   } catch (err) {

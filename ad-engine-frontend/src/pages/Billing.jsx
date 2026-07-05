@@ -18,14 +18,16 @@ const PLAN_DISPLAY = {
     price: 0,
     color: 'slate',
     badge: 'bg-slate-100 text-slate-700',
-    features: ['100 impressions/month', 'Basic analytics', 'Email support'],
+    tagline: 'Perfect for trying PinkCurve',
+    features: ['1 Seller Story', '10 Intent Matches/month', 'Basic analytics', 'Email support'],
   },
   starter: {
     name: 'Starter',
     price: 29,
     color: 'blue',
     badge: 'bg-blue-100 text-blue-700',
-    features: ['100 impressions/month', 'Full analytics', 'Priority support', 'No overage charges'],
+    tagline: 'For growing sellers',
+    features: ['5 Seller Stories', '100 Intent Matches/month', 'Full analytics', 'Priority support'],
   },
   pro: {
     name: 'Pro',
@@ -33,14 +35,16 @@ const PLAN_DISPLAY = {
     color: 'purple',
     badge: 'bg-purple-100 text-purple-700',
     popular: true,
-    features: ['500 impressions/month', 'Advanced analytics', 'Priority support', 'API access', 'Custom branding'],
+    tagline: 'For established businesses',
+    features: ['20 Seller Stories', '500 Intent Matches/month', 'Advanced analytics', 'Priority support', 'API access'],
   },
   enterprise: {
     name: 'Enterprise',
     price: 299,
     color: 'pink',
     badge: 'bg-pink-100 text-pink-700',
-    features: ['Unlimited impressions', 'Dedicated support', 'Custom integrations', 'SLA guarantee', 'Account manager'],
+    tagline: 'For high-volume sellers',
+    features: ['Unlimited Stories', 'Unlimited Matches', 'Dedicated support', 'Custom integrations', 'Account manager'],
   },
 };
 
@@ -72,9 +76,12 @@ function PlanCard({ planKey, config, currentPlan, onSubscribe, loading }) {
 
       <div className="text-center mb-6">
         <h3 className="text-xl font-bold text-slate-800">{config.name}</h3>
+        {config.tagline && (
+          <p className="text-xs text-slate-500 mt-1">{config.tagline}</p>
+        )}
         <div className="mt-2">
           <span className="text-4xl font-bold text-slate-900">${config.price}</span>
-          {config.price > 0 && <span className="text-slate-500">/month</span>}
+          {config.price > 0 ? <span className="text-slate-500">/month</span> : <span className="text-slate-500"> forever</span>}
         </div>
       </div>
 
@@ -115,7 +122,8 @@ function PlanCard({ planKey, config, currentPlan, onSubscribe, loading }) {
 }
 
 function UsageProgressBar({ used, included, label }) {
-  const isUnlimited = included === -1;
+  // Treat 999+ stories or 999999+ impressions as unlimited
+  const isUnlimited = included >= 999;
   const percentage = isUnlimited ? 0 : Math.min(100, (used / included) * 100);
   const isOverage = !isUnlimited && used > included;
 
@@ -132,12 +140,12 @@ function UsageProgressBar({ used, included, label }) {
           className={`h-full rounded-full transition-all ${
             isOverage ? 'bg-red-500' : percentage > 80 ? 'bg-amber-500' : 'bg-gradient-to-r from-pink-500 to-purple-500'
           }`}
-          style={{ width: isUnlimited ? '0%' : `${Math.min(100, percentage)}%` }}
+          style={{ width: isUnlimited ? '100%' : `${Math.min(100, percentage)}%` }}
         />
       </div>
       {isOverage && (
         <p className="text-xs text-red-600 mt-1">
-          {(used - included).toLocaleString()} impressions over limit
+          {(used - included).toLocaleString()} over limit
         </p>
       )}
     </div>
@@ -284,12 +292,27 @@ export default function Billing() {
         </div>
 
         {/* Usage Stats */}
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="grid md:grid-cols-3 gap-6">
+          <div className="bg-slate-50 rounded-xl p-4">
+            <UsageProgressBar
+              used={subscription?.stories_used || 0}
+              included={subscription?.stories_included || 1}
+              label="Seller Stories"
+            />
+            {subscription?.stories_remaining === 0 && subscription?.stories_included < 999 && (
+              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="text-xs text-amber-700 font-medium">
+                  Story limit reached. Upgrade to add more!
+                </p>
+              </div>
+            )}
+          </div>
+
           <div className="bg-slate-50 rounded-xl p-4">
             <UsageProgressBar
               used={subscription?.impressions_used || 0}
-              included={subscription?.impressions_included || 100}
-              label="Seller Story Impressions"
+              included={subscription?.impressions_included || 10}
+              label="Intent Matches"
             />
           </div>
 
@@ -311,7 +334,7 @@ export default function Billing() {
                   </span>
                 </div>
                 <p className="text-xs text-red-600 mt-1">
-                  {subscription.overage_count} impressions × ${parseFloat(subscription.impression_overage_rate || 0.25).toFixed(2)}
+                  {subscription.overage_count} matches × ${parseFloat(subscription.impression_overage_rate || 0.25).toFixed(2)}
                 </p>
               </div>
             )}

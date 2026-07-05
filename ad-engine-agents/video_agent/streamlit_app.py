@@ -141,13 +141,16 @@ RESPONSE FORMAT:
 - If no results, suggest trying a different search or browsing featured ads"""
 
     def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
-        """Call MCP tool using direct HTTP."""
+        """Call MCP tool using streaming HTTP to handle SSE responses."""
         import json
         import uuid
 
         try:
-            # Initialize session
-            init_response = httpx.post(
+            session_id = None
+
+            # Initialize session with streaming to handle SSE
+            with httpx.stream(
+                "POST",
                 MCP_URL,
                 json={
                     "jsonrpc": "2.0",
@@ -164,14 +167,24 @@ RESPONSE FORMAT:
                     "Accept": "application/json, text/event-stream"
                 },
                 timeout=30.0
-            )
+            ) as init_response:
+                session_id = init_response.headers.get("mcp-session-id")
+                # Consume the stream to complete the request
+                for line in init_response.iter_lines():
+                    if line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])
+                            if "result" in data:
+                                break  # Init successful
+                        except json.JSONDecodeError:
+                            continue
 
-            session_id = init_response.headers.get("mcp-session-id")
             if not session_id:
-                return f"MCP Error: No session ID. Status: {init_response.status_code}"
+                return "MCP Error: No session ID received"
 
-            # Call tool
-            tool_response = httpx.post(
+            # Call tool with streaming to handle SSE
+            with httpx.stream(
+                "POST",
                 MCP_URL,
                 json={
                     "jsonrpc": "2.0",
@@ -185,18 +198,19 @@ RESPONSE FORMAT:
                     "mcp-session-id": session_id
                 },
                 timeout=30.0
-            )
+            ) as tool_response:
+                for line in tool_response.iter_lines():
+                    if line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])
+                            if "result" in data and "content" in data["result"]:
+                                return data["result"]["content"][0]["text"]
+                            elif "error" in data:
+                                return f"MCP Error: {data['error']}"
+                        except json.JSONDecodeError:
+                            continue
 
-            # Parse SSE response
-            for line in tool_response.text.split("\n"):
-                if line.startswith("data: "):
-                    data = json.loads(line[6:])
-                    if "result" in data and "content" in data["result"]:
-                        return data["result"]["content"][0]["text"]
-                    elif "error" in data:
-                        return f"MCP Error: {data['error']}"
-
-            return f"Unexpected response: {tool_response.text[:200]}"
+            return "MCP Error: No valid response received"
 
         except Exception as e:
             return f"MCP call failed: {str(e)}"

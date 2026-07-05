@@ -141,79 +141,98 @@ RESPONSE FORMAT:
 - If no results, suggest trying a different search or browsing featured ads"""
 
     def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
-        """Call MCP tool using streaming HTTP to handle SSE responses."""
+        """Call MCP tool using thread with timeout to avoid hanging."""
         import json
         import uuid
+        import threading
+        import queue
 
-        try:
-            session_id = None
+        result_queue = queue.Queue()
 
-            # Initialize session with streaming to handle SSE
-            with httpx.stream(
-                "POST",
-                MCP_URL,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": str(uuid.uuid4()),
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {"name": "pinkcurve-streamlit", "version": "2.0"}
-                    }
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                },
-                timeout=30.0
-            ) as init_response:
+        def _do_mcp_call():
+            try:
+                # Initialize session
+                init_response = httpx.post(
+                    MCP_URL,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": str(uuid.uuid4()),
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {},
+                            "clientInfo": {"name": "pinkcurve-streamlit", "version": "2.0"}
+                        }
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    timeout=10.0
+                )
+
                 session_id = init_response.headers.get("mcp-session-id")
-                # Consume the stream to complete the request
-                for line in init_response.iter_lines():
+                if not session_id:
+                    result_queue.put(("error", f"No session ID. Status: {init_response.status_code}"))
+                    return
+
+                # Call tool
+                tool_response = httpx.post(
+                    MCP_URL,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": str(uuid.uuid4()),
+                        "method": "tools/call",
+                        "params": {"name": tool_name, "arguments": arguments}
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "mcp-session-id": session_id
+                    },
+                    timeout=10.0
+                )
+
+                result_queue.put(("success", tool_response.text))
+
+            except Exception as e:
+                result_queue.put(("error", str(e)))
+
+        # Run in background thread
+        thread = threading.Thread(target=_do_mcp_call)
+        thread.daemon = True
+        thread.start()
+
+        # Wait with timeout
+        try:
+            status, data = result_queue.get(timeout=15)
+            if status == "error":
+                return f"MCP Error: {data}"
+
+            # Parse response - try JSON first, then SSE format
+            try:
+                parsed = json.loads(data)
+                if "result" in parsed and "content" in parsed["result"]:
+                    return parsed["result"]["content"][0]["text"]
+                elif "error" in parsed:
+                    return f"MCP Error: {parsed['error']}"
+                return f"Unexpected JSON: {data[:200]}"
+            except json.JSONDecodeError:
+                # Try SSE format
+                for line in data.split("\n"):
                     if line.startswith("data: "):
                         try:
-                            data = json.loads(line[6:])
-                            if "result" in data:
-                                break  # Init successful
+                            parsed = json.loads(line[6:])
+                            if "result" in parsed and "content" in parsed["result"]:
+                                return parsed["result"]["content"][0]["text"]
+                            elif "error" in parsed:
+                                return f"MCP Error: {parsed['error']}"
                         except json.JSONDecodeError:
                             continue
+                return f"Could not parse response: {data[:200]}"
 
-            if not session_id:
-                return "MCP Error: No session ID received"
-
-            # Call tool with streaming to handle SSE
-            with httpx.stream(
-                "POST",
-                MCP_URL,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": str(uuid.uuid4()),
-                    "method": "tools/call",
-                    "params": {"name": tool_name, "arguments": arguments}
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "mcp-session-id": session_id
-                },
-                timeout=30.0
-            ) as tool_response:
-                for line in tool_response.iter_lines():
-                    if line.startswith("data: "):
-                        try:
-                            data = json.loads(line[6:])
-                            if "result" in data and "content" in data["result"]:
-                                return data["result"]["content"][0]["text"]
-                            elif "error" in data:
-                                return f"MCP Error: {data['error']}"
-                        except json.JSONDecodeError:
-                            continue
-
-            return "MCP Error: No valid response received"
-
-        except Exception as e:
-            return f"MCP call failed: {str(e)}"
+        except queue.Empty:
+            return "MCP Error: Request timed out after 15 seconds"
 
     @tool
     def search_video_ads_for_buyer(query: str) -> str:
@@ -274,14 +293,60 @@ RESPONSE FORMAT:
     return builder.compile(), None
 
 
-def run_video_agent(graph, user_message: str) -> tuple:
-    """Run one turn of the video agent and return (response, error_traceback)."""
+def run_video_agent_with_progress(graph, user_message: str, status_placeholder) -> tuple:
+    """Run video agent with progress updates. Returns (response, error_traceback)."""
+    import threading
+    import queue
+    import time
+
+    result_queue = queue.Queue()
+
+    def _run_agent():
+        try:
+            result = graph.invoke({"messages": [{"role": "user", "content": user_message}]})
+            result_queue.put(("success", result["messages"][-1].content))
+        except Exception as e:
+            error_tb = traceback.format_exc()
+            result_queue.put(("error", f"**Error:** {str(e)}\n\n```\n{error_tb}\n```"))
+
+    thread = threading.Thread(target=_run_agent)
+    thread.daemon = True
+    thread.start()
+
+    # Show progress while waiting
+    start_time = time.time()
+    while thread.is_alive():
+        elapsed = time.time() - start_time
+        if elapsed < 5:
+            status_placeholder.markdown("🔍 Searching PinkCurve video ads...")
+        elif elapsed < 10:
+            status_placeholder.markdown("🔍 Still searching...")
+        elif elapsed < 20:
+            status_placeholder.markdown("🔍 Almost there...")
+        else:
+            status_placeholder.markdown("🔍 Taking longer than expected...")
+
+        try:
+            status, data = result_queue.get(timeout=0.5)
+            status_placeholder.empty()
+            if status == "success":
+                return data, None
+            else:
+                return None, data
+        except queue.Empty:
+            continue
+
+    # Thread finished, get result
     try:
-        result = graph.invoke({"messages": [{"role": "user", "content": user_message}]})
-        return result["messages"][-1].content, None
-    except Exception as e:
-        error_tb = traceback.format_exc()
-        return None, f"**Error:** {str(e)}\n\n```\n{error_tb}\n```"
+        status, data = result_queue.get(timeout=1)
+        status_placeholder.empty()
+        if status == "success":
+            return data, None
+        else:
+            return None, data
+    except queue.Empty:
+        status_placeholder.empty()
+        return None, "Request timed out"
 
 
 # -----------------------------------------------------------------------------
@@ -340,8 +405,10 @@ def main():
 
         # Get agent response
         with st.chat_message("assistant"):
-            with st.spinner("Searching PinkCurve video ads..."):
-                response, error = run_video_agent(st.session_state.agent_graph, user_input)
+            status_placeholder = st.empty()
+            response, error = run_video_agent_with_progress(
+                st.session_state.agent_graph, user_input, status_placeholder
+            )
 
             if error:
                 st.error("Failed to process your request")

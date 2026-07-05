@@ -170,16 +170,18 @@ def setup_agent():
                 timeout=30.0
             )
 
-            # Parse SSE response
-            init_text = init_response.text
-            if "event: message" in init_text:
-                # Extract JSON from SSE format
-                for line in init_text.split("\n"):
-                    if line.startswith("data: "):
-                        init_data = json.loads(line[6:])
-                        break
+            # Debug: log init response
+            st.sidebar.write(f"Init status: {init_response.status_code}")
 
-            # Call the tool
+            # Get session ID from response headers (required for tool calls)
+            session_id = init_response.headers.get("mcp-session-id")
+            if not session_id:
+                st.sidebar.error("No mcp-session-id in response")
+                return f"MCP Error: No session ID returned. Status: {init_response.status_code}, Body: {init_response.text[:200]}"
+
+            st.sidebar.write(f"Session ID: {session_id[:16]}...")
+
+            # Call the tool with session ID
             tool_payload = {
                 "jsonrpc": "2.0",
                 "id": str(uuid.uuid4()),
@@ -195,13 +197,18 @@ def setup_agent():
                 json=tool_payload,
                 headers={
                     "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
+                    "Accept": "application/json, text/event-stream",
+                    "mcp-session-id": session_id
                 },
                 timeout=30.0
             )
 
-            # Parse tool response
+            st.sidebar.write(f"Tool status: {tool_response.status_code}")
+
+            # Parse tool response (SSE format)
             tool_text = tool_response.text
+            st.sidebar.write(f"Tool response: {tool_text[:300]}...")
+
             if "event: message" in tool_text:
                 for line in tool_text.split("\n"):
                     if line.startswith("data: "):
@@ -214,6 +221,7 @@ def setup_agent():
             return f"Unexpected MCP response: {tool_text[:200]}"
 
         except Exception as e:
+            st.sidebar.error(f"MCP Exception: {str(e)}")
             return f"MCP call failed: {str(e)}"
 
     @tool

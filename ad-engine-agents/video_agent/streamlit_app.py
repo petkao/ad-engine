@@ -166,7 +166,7 @@ RESPONSE FORMAT:
                     },
                     headers={
                         "Content-Type": "application/json",
-                        "Accept": "application/json"
+                        "Accept": "application/json, text/event-stream"
                     },
                     timeout=10.0
                 )
@@ -187,7 +187,7 @@ RESPONSE FORMAT:
                     },
                     headers={
                         "Content-Type": "application/json",
-                        "Accept": "application/json",
+                        "Accept": "application/json, text/event-stream",
                         "mcp-session-id": session_id
                     },
                     timeout=10.0

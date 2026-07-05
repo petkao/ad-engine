@@ -6,6 +6,12 @@ A video ad discovery assistant powered by LangGraph and MCP.
 
 import re
 import asyncio
+import traceback
+
+# nest_asyncio allows asyncio.run() inside Streamlit's event loop
+import nest_asyncio
+nest_asyncio.apply()
+
 import streamlit as st
 
 # Page configuration - must be first Streamlit command
@@ -206,13 +212,14 @@ def setup_agent():
     return builder.compile(), None
 
 
-def run_video_agent(graph, user_message: str) -> str:
-    """Run one turn of the video agent and return its final text response."""
+def run_video_agent(graph, user_message: str) -> tuple:
+    """Run one turn of the video agent and return (response, error_traceback)."""
     try:
         result = graph.invoke({"messages": [{"role": "user", "content": user_message}]})
-        return result["messages"][-1].content
+        return result["messages"][-1].content, None
     except Exception as e:
-        return f"Sorry, I encountered an error: {str(e)}"
+        error_tb = traceback.format_exc()
+        return None, f"**Error:** {str(e)}\n\n```\n{error_tb}\n```"
 
 
 # -----------------------------------------------------------------------------
@@ -272,8 +279,14 @@ def main():
         # Get agent response
         with st.chat_message("assistant"):
             with st.spinner("Searching PinkCurve video ads..."):
-                response = run_video_agent(st.session_state.agent_graph, user_input)
-            render_message(response)
+                response, error = run_video_agent(st.session_state.agent_graph, user_input)
+
+            if error:
+                st.error("Failed to process your request")
+                st.markdown(error)
+                response = "Sorry, I encountered an error. Please check the details above."
+            else:
+                render_message(response)
 
         # Save assistant message
         st.session_state.messages.append({"role": "assistant", "content": response})

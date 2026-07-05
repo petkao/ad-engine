@@ -8,9 +8,9 @@ const INDUSTRIES = [
   'Jewelry & Accessories','Baby & Kids','Musical Instruments','General',
 ];
 
-export default function Login() {
+export default function Login({ defaultTab = 'login' }) {
   const { login, register, loginWithGoogle } = useAuth();
-  const [mode, setMode] = useState('login'); // 'login' | 'register' | 'registered'
+  const [mode, setMode] = useState(defaultTab); // 'login' | 'register' | 'registered'
   const [form, setForm] = useState({ name: '', email: '', password: '', industry: 'General', location: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -51,12 +51,19 @@ export default function Login() {
       </div>
 
       <div className="relative w-full max-w-md">
+        {/* Back to shopping link */}
+        <div className="text-center mb-4">
+          <a href="/" className="text-slate-400 hover:text-white text-sm transition-colors">
+            ← Back to shopping
+          </a>
+        </div>
+
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="text-4xl font-bold text-white mb-1" style={{ fontFamily: '"DM Serif Display", serif' }}>
-            Ad Engine
+            PinkCurve
           </div>
-          <div className="text-blue-300 text-sm">Privacy-first personal AI ad platform</div>
+          <div className="text-blue-300 text-sm">Seller Portal</div>
           <div className="text-slate-500 text-xs mt-1">Peter Kao Associates</div>
         </div>
 

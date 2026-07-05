@@ -116,11 +116,15 @@ function AppShell() {
     }
   }, [userIsAdmin, page]); // Refresh when page changes (in case they just approved someone)
 
-  // Check if this is a public page
-  const isSearchPage = window.location.pathname === '/search';
-  const isVerifyEmailPage = window.location.pathname === '/verify-email';
+  // Check if this is a public page (buyer-facing routes require NO login)
+  const pathname = window.location.pathname;
+  const isBuyerRoute = pathname === '/' || pathname === '/search' || pathname === '/browse';
+  const isVerifyEmailPage = pathname === '/verify-email';
+  const isRegisterPage = pathname === '/register';
+  const isLoginPage = pathname === '/login';
 
-  if (isSearchPage) return <BuyerLanding />;
+  // Public buyer routes - show BuyerLanding without auth
+  if (isBuyerRoute && !user) return <BuyerLanding />;
   if (isVerifyEmailPage) return <VerifyEmail />;
 
   if (loading) return (
@@ -129,7 +133,13 @@ function AppShell() {
     </div>
   );
 
-  if (!user) return <Login />;
+  // Only show login for /login, /register, or seller routes when not authenticated
+  if (!user) {
+    // If on /register route, show Login with register tab
+    if (isRegisterPage || isLoginPage) return <Login defaultTab={isRegisterPage ? 'register' : 'login'} />;
+    // For any other route requiring auth, show login
+    return <Login />;
+  }
 
   // Check seller approval status - redirect non-approved sellers to waiting page
   // Admins always have access regardless of approval_status

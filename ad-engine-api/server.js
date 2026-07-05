@@ -1346,7 +1346,8 @@ app.post('/api/ads', requireAuth, checkSellerApproved, async (req, res) => {
       const subscription = subRes.rows[0];
       const plan = subscription?.plan || 'free';
       const planConfig = STRIPE_PLANS[plan] || STRIPE_PLANS.free;
-      const storiesLimit = subscription?.stories_included || planConfig.stories || 1;
+      // Use planConfig as source of truth for stories limit
+      const storiesLimit = planConfig.stories;
 
       // Count seller's active ads/stories (999+ = effectively unlimited)
       if (storiesLimit < 999) {
@@ -3274,7 +3275,7 @@ app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req
       };
     }
 
-    // Get plan config for limits
+    // Get plan config for limits - planConfig is source of truth based on plan name
     const plan = subscription.plan || 'free';
     const planConfig = STRIPE_PLANS[plan] || STRIPE_PLANS.free;
 
@@ -3289,7 +3290,8 @@ app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req
     `, [sellerId, periodStart]);
 
     const impressionsUsed = parseInt(impressionsRes.rows[0]?.count || 0, 10);
-    const impressionsIncluded = subscription.impressions_included || planConfig.impressions || 10;
+    // Use planConfig as source of truth for limits based on plan name
+    const impressionsIncluded = planConfig.impressions;
     const isUnlimitedImpressions = impressionsIncluded >= 999999;
     const impressionsRemaining = isUnlimitedImpressions ? 999999 : Math.max(0, impressionsIncluded - impressionsUsed);
     const overageCount = isUnlimitedImpressions ? 0 : Math.max(0, impressionsUsed - impressionsIncluded);
@@ -3305,7 +3307,8 @@ app.get('/api/seller/subscription', requireAuth, checkSellerApproved, async (req
     `, [sellerId]);
 
     const storiesUsed = parseInt(storiesRes.rows[0]?.count || 0, 10);
-    const storiesIncluded = subscription.stories_included || planConfig.stories || 1;
+    // Use planConfig as source of truth for limits based on plan name
+    const storiesIncluded = planConfig.stories;
     const isUnlimitedStories = storiesIncluded >= 999;
     const storiesRemaining = isUnlimitedStories ? 999 : Math.max(0, storiesIncluded - storiesUsed);
 

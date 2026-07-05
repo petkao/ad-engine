@@ -141,98 +141,74 @@ RESPONSE FORMAT:
 - If no results, suggest trying a different search or browsing featured ads"""
 
     def _call_mcp_tool(tool_name: str, arguments: dict) -> str:
-        """Call MCP tool using thread with timeout to avoid hanging."""
+        """Call MCP tool using streaming - break on first data line to avoid hanging."""
         import json
-        import uuid
-        import threading
-        import queue
 
-        result_queue = queue.Queue()
-
-        def _do_mcp_call():
-            try:
-                # Initialize session
-                init_response = httpx.post(
-                    MCP_URL,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": str(uuid.uuid4()),
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {},
-                            "clientInfo": {"name": "pinkcurve-streamlit", "version": "2.0"}
-                        }
-                    },
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream"
-                    },
-                    timeout=10.0
-                )
-
-                session_id = init_response.headers.get("mcp-session-id")
-                if not session_id:
-                    result_queue.put(("error", f"No session ID. Status: {init_response.status_code}"))
-                    return
-
-                # Call tool
-                tool_response = httpx.post(
-                    MCP_URL,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": str(uuid.uuid4()),
-                        "method": "tools/call",
-                        "params": {"name": tool_name, "arguments": arguments}
-                    },
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                        "mcp-session-id": session_id
-                    },
-                    timeout=10.0
-                )
-
-                result_queue.put(("success", tool_response.text))
-
-            except Exception as e:
-                result_queue.put(("error", str(e)))
-
-        # Run in background thread
-        thread = threading.Thread(target=_do_mcp_call)
-        thread.daemon = True
-        thread.start()
-
-        # Wait with timeout
         try:
-            status, data = result_queue.get(timeout=15)
-            if status == "error":
-                return f"MCP Error: {data}"
+            # Step 1: Initialize session
+            init_payload = {
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "streamlit", "version": "1.0"}
+                },
+                "id": 1
+            }
 
-            # Parse response - try JSON first, then SSE format
-            try:
-                parsed = json.loads(data)
-                if "result" in parsed and "content" in parsed["result"]:
-                    return parsed["result"]["content"][0]["text"]
-                elif "error" in parsed:
-                    return f"MCP Error: {parsed['error']}"
-                return f"Unexpected JSON: {data[:200]}"
-            except json.JSONDecodeError:
-                # Try SSE format
-                for line in data.split("\n"):
+            init_response = httpx.post(
+                MCP_URL,
+                json=init_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                },
+                timeout=10.0
+            )
+
+            session_id = init_response.headers.get("mcp-session-id", "")
+            if not session_id:
+                return f"MCP Error: No session ID. Status: {init_response.status_code}"
+
+            # Step 2: Call tool with streaming - break on first data line
+            tool_payload = {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+                "id": 2
+            }
+
+            with httpx.stream(
+                "POST",
+                MCP_URL,
+                json=tool_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "mcp-session-id": session_id
+                },
+                timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+            ) as response:
+                for line in response.iter_lines():
                     if line.startswith("data: "):
                         try:
-                            parsed = json.loads(line[6:])
-                            if "result" in parsed and "content" in parsed["result"]:
-                                return parsed["result"]["content"][0]["text"]
-                            elif "error" in parsed:
-                                return f"MCP Error: {parsed['error']}"
+                            data = json.loads(line[6:])
+                            if "result" in data and "content" in data["result"]:
+                                return data["result"]["content"][0]["text"]
+                            elif "error" in data:
+                                return f"MCP Error: {data['error']}"
                         except json.JSONDecodeError:
                             continue
-                return f"Could not parse response: {data[:200]}"
+                        # Break after first valid data line - this is the key fix!
+                        break
 
-        except queue.Empty:
-            return "MCP Error: Request timed out after 15 seconds"
+            return "MCP Error: No valid response received"
+
+        except httpx.TimeoutException:
+            return "MCP Error: Request timed out"
+        except Exception as e:
+            return f"MCP Error: {str(e)}"
 
     @tool
     def search_video_ads_for_buyer(query: str) -> str:

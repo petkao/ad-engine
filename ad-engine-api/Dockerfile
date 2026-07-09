@@ -6,6 +6,9 @@ FROM node:20-alpine
 # Set working directory
 WORKDIR /app
 
+# Set cache directory for Transformers.js models
+ENV TRANSFORMERS_CACHE=/tmp/model_cache
+
 # Copy package files
 COPY package*.json ./
 
@@ -17,6 +20,7 @@ COPY server.js ./
 COPY emailService.js ./
 COPY geoService.js ./
 COPY transcriptionService.js ./
+COPY rerankerService.js ./
 
 # Expose port
 EXPOSE 8080

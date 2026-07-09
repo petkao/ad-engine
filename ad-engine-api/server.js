@@ -12,6 +12,7 @@ const {
 const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
+const { rerankResults, warmUpReranker } = require('./rerankerService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -2459,17 +2460,21 @@ async function generateQueryEmbedding(text) {
 }
 
 // Search ads using pgvector cosine similarity
-async function semanticSearch(queryText, limit = 12, category = null) {
+async function semanticSearch(queryText, limit = 12, category = null, forReranking = false) {
   // Generate embedding for the query
   const embedding = await generateQueryEmbedding(queryText);
   const vectorStr = `[${embedding.join(',')}]`;
 
+  // For reranking, fetch more candidates (20) so reranker can pick best 5
+  const fetchLimit = forReranking ? Math.max(limit * 4, 20) : limit;
+
   let sql = `
-    SELECT 
+    SELECT
       a.id, a.headline, a.body_copy, a.format, a.media_url,
       a.cost_per_match, a.intent_tags, a.status, a.thumbnail_url,
       p.title as product_title, p.price, p.category, p.currency, p.product_url, p.image_url as product_image_url,
       s.name as seller_name, s.industry, s.location as seller_location, s.is_verified as seller_verified,
+      ae.transcript,
       1 - (ae.embedding <=> $1::vector) as similarity_score
     FROM ad_embeddings ae
     JOIN ads a ON ae.ad_id = a.id
@@ -2488,7 +2493,7 @@ async function semanticSearch(queryText, limit = 12, category = null) {
 
   sql += ` AND (1 - (ae.embedding <=> $1::vector)) > 0.35`;
   sql += ` ORDER BY ae.embedding <=> $1::vector LIMIT $${params.length + 1}`;
-  params.push(limit);
+  params.push(fetchLimit);
 
   const { rows } = await pool.query(sql, params);
   return rows.map((row, rank) => ({
@@ -2500,12 +2505,24 @@ async function semanticSearch(queryText, limit = 12, category = null) {
 
 // ── Semantic search endpoint for buyer search ─────────────────
 app.post('/api/buyer/semantic-match', async (req, res) => {
-  const { query, category, device_id, limit = 12 } = req.body;
+  const { query, category, device_id, limit = 5, rerank = true } = req.body;
   if (!query && !category) return res.status(400).json({ error: 'Query or category required' });
 
   try {
     const searchText = query || category;
-    const matches = await semanticSearch(searchText, limit, category);
+
+    // Get candidates from pgvector (more if reranking)
+    const candidates = await semanticSearch(searchText, limit, category, rerank);
+
+    // Apply BGE reranker if enabled (default: on)
+    let matches;
+    if (rerank && candidates.length > 0) {
+      matches = await rerankResults(searchText, candidates, limit);
+      // Update rank_position after reranking
+      matches = matches.map((m, idx) => ({ ...m, rank_position: idx + 1 }));
+    } else {
+      matches = candidates.slice(0, limit);
+    }
 
     // Log session anonymously
     if (device_id && matches.length > 0) {
@@ -2529,7 +2546,7 @@ app.post('/api/buyer/semantic-match', async (req, res) => {
           await pool.query(`
             INSERT INTO ad_matches (id, buyer_id, session_id, ad_id, relevance_score, rank_position, status, matched_at)
             VALUES (uuid_generate_v4(), $1, $2, $3, $4, $5, 'served', now())
-          `, [buyerId, sessionId, match.id, match.relevance_score, match.rank_position]);
+          `, [buyerId, sessionId, match.id, match.rerank_score || match.relevance_score, match.rank_position]);
           await pool.query(`UPDATE ads SET spent = spent + cost_per_match WHERE id = $1`, [match.id]);
         }
       } catch (logErr) {
@@ -2537,7 +2554,13 @@ app.post('/api/buyer/semantic-match', async (req, res) => {
       }
     }
 
-    res.json({ matches, query, category, total: matches.length, engine: 'pgvector' });
+    res.json({
+      matches,
+      query,
+      category,
+      total: matches.length,
+      engine: rerank ? 'pgvector+bge-reranker' : 'pgvector'
+    });
   } catch (err) {
     console.error('Semantic search error:', err);
     res.status(500).json({ error: err.message || 'Semantic search failed' });
@@ -3581,7 +3604,16 @@ async function startServer() {
     console.error('Initialization error:', err);
   }
 
-  app.listen(PORT, () => console.log(`Ad Engine API running on http://localhost:${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`Ad Engine API running on http://localhost:${PORT}`);
+
+    // Warm up BGE reranker in background (avoid cold start latency)
+    setTimeout(() => {
+      warmUpReranker().catch(err => {
+        console.error('[Startup] Reranker warm-up failed:', err.message);
+      });
+    }, 5000);
+  });
 }
 
 startServer();

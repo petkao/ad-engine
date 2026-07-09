@@ -9,6 +9,7 @@ const { pipeline } = require('@xenova/transformers');
 
 let reranker = null;
 let loadingPromise = null;
+let modelReady = false;
 
 /**
  * Load the BGE reranker model (lazy initialization)
@@ -28,11 +29,19 @@ async function loadReranker() {
       { quantized: true }  // Use quantized model for faster inference
     );
 
+    modelReady = true;
     console.log(`[Reranker] Model loaded in ${Date.now() - startTime}ms`);
     return reranker;
   })();
 
   return loadingPromise;
+}
+
+/**
+ * Check if the reranker model is ready (non-blocking)
+ */
+function isRerankerReady() {
+  return modelReady;
 }
 
 /**
@@ -129,5 +138,6 @@ async function warmUpReranker() {
 module.exports = {
   rerankResults,
   warmUpReranker,
-  loadReranker
+  loadReranker,
+  isRerankerReady
 };

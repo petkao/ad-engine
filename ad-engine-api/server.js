@@ -12,7 +12,7 @@ const {
 const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
-const { rerankResults, warmUpReranker } = require('./rerankerService');
+const { rerankResults, warmUpReranker, isRerankerReady } = require('./rerankerService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -2522,15 +2522,21 @@ app.post('/api/buyer/semantic-match', async (req, res) => {
       console.log(`[SemanticSearch] Top 5 similarities: ${candidates.slice(0, 5).map(c => c.similarity_score.toFixed(3)).join(', ')}`);
     }
 
-    // Apply BGE reranker if enabled (default: on)
+    // Apply BGE reranker if enabled AND model is ready (non-blocking check)
     let matches;
-    if (rerank && candidates.length > 0) {
+    const useReranker = rerank && candidates.length > 0 && isRerankerReady();
+
+    if (useReranker) {
       matches = await rerankResults(searchText, candidates, limit);
       // Update rank_position after reranking
       matches = matches.map((m, idx) => ({ ...m, rank_position: idx + 1 }));
       console.log(`[Reranker] Reranked to ${matches.length} results, scores: ${matches.map(m => (m.rerank_score || 0).toFixed(3)).join(', ')}`);
     } else {
+      // Fall back to pgvector ordering (reranker not ready or disabled)
       matches = candidates.slice(0, limit);
+      if (rerank && !isRerankerReady()) {
+        console.log('[SemanticSearch] Reranker not ready, using pgvector ordering');
+      }
     }
 
     // Log session anonymously
@@ -2568,7 +2574,7 @@ app.post('/api/buyer/semantic-match', async (req, res) => {
       query,
       category,
       total: matches.length,
-      engine: rerank ? 'pgvector+bge-reranker' : 'pgvector'
+      engine: useReranker ? 'pgvector+bge-reranker' : 'pgvector'
     });
   } catch (err) {
     console.error('Semantic search error:', err);

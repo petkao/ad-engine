@@ -3,6 +3,9 @@ const { Pool } = require('pg');
 const OpenAI = require('openai');
 const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
 
+// --force flag: regenerate ALL embeddings even if they already exist
+const FORCE_REGENERATE = process.argv.includes('--force');
+
 const pool = new Pool({
   host:     process.env.DB_HOST     || 'localhost',
   port:     process.env.DB_PORT     || 5432,
@@ -31,6 +34,10 @@ async function ensureTranscriptColumns() {
     ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS transcript TEXT;
     ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS embedding_text TEXT;
   `);
+  // Add unique index for ON CONFLICT support
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ad_embeddings_ad_id_unique ON ad_embeddings(ad_id);
+  `);
 }
 
 async function generateAllEmbeddings() {
@@ -48,7 +55,8 @@ async function generateAllEmbeddings() {
     ORDER BY a.created_at ASC
   `);
 
-  console.log(`\n🧠 Generating embeddings for ${ads.length} ads (with Whisper transcription for videos)\n`);
+  const modeLabel = FORCE_REGENERATE ? '(FORCE MODE - regenerating all)' : '(skipping existing)';
+  console.log(`\n🧠 Generating embeddings for ${ads.length} ads ${modeLabel}\n`);
 
   let success = 0;
   let failed  = 0;
@@ -59,15 +67,17 @@ async function generateAllEmbeddings() {
     const ad  = ads[i];
     const num = `[${i + 1}/${ads.length}]`;
 
-    // Check if embedding already exists
-    const existing = await pool.query(
-      'SELECT id FROM ad_embeddings WHERE ad_id = $1', [ad.id]
-    );
+    // Check if embedding already exists (skip this check if --force)
+    if (!FORCE_REGENERATE) {
+      const existing = await pool.query(
+        'SELECT id FROM ad_embeddings WHERE ad_id = $1', [ad.id]
+      );
 
-    if (existing.rows.length > 0) {
-      console.log(`${num} ⏭️  Skipping "${ad.headline}" — already has embedding`);
-      skipped++;
-      continue;
+      if (existing.rows.length > 0) {
+        console.log(`${num} ⏭️  Skipping "${ad.headline}" — already has embedding`);
+        skipped++;
+        continue;
+      }
     }
 
     try {
@@ -88,14 +98,20 @@ async function generateAllEmbeddings() {
       const embeddingText = buildAdTextWithTranscript(ad, transcript);
       const embedding = await generateEmbedding(embeddingText);
 
-      // Store embedding as pgvector format
+      // Store embedding as pgvector format (upsert)
       const vectorStr = `[${embedding.join(',')}]`;
       const hasTranscript = isMeaningfulTranscript(transcript);
 
       await pool.query(
         `INSERT INTO ad_embeddings (id, ad_id, embedding, model_version, has_transcript, transcript, embedding_text, created_at)
          VALUES (uuid_generate_v4(), $1, $2::vector, 'text-embedding-3-small', $3, $4, $5, now())
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (ad_id) DO UPDATE SET
+           embedding = $2::vector,
+           model_version = 'text-embedding-3-small',
+           has_transcript = $3,
+           transcript = $4,
+           embedding_text = $5,
+           created_at = now()`,
         [ad.id, vectorStr, hasTranscript, transcript, embeddingText]
       );
 

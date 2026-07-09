@@ -296,17 +296,27 @@ function ensureSubscriptionsTable() {
 // ── AD EMBEDDINGS TRANSCRIPT COLUMNS ─────────────────────────
 let adEmbeddingsTranscriptReady;
 
-function ensureAdEmbeddingsTranscriptColumns() {
+async function ensureAdEmbeddingsTranscriptColumns() {
   if (!adEmbeddingsTranscriptReady) {
-    adEmbeddingsTranscriptReady = pool.query(`
-      -- Add transcript columns to ad_embeddings if they don't exist
-      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS has_transcript BOOLEAN DEFAULT false;
-      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS transcript TEXT;
-      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS embedding_text TEXT;
-    `).catch((err) => {
-      adEmbeddingsTranscriptReady = undefined;
-      console.error('Failed to add transcript columns to ad_embeddings:', err.message);
-    });
+    adEmbeddingsTranscriptReady = (async () => {
+      try {
+        // Add transcript columns
+        await pool.query(`
+          ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS has_transcript BOOLEAN DEFAULT false;
+          ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS transcript TEXT;
+          ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS embedding_text TEXT;
+        `);
+        // Add unique constraint on ad_id for ON CONFLICT support
+        await pool.query(`
+          CREATE UNIQUE INDEX IF NOT EXISTS ad_embeddings_ad_id_unique ON ad_embeddings(ad_id);
+        `);
+        console.log('[Migration] ad_embeddings transcript columns and unique index ready');
+      } catch (err) {
+        adEmbeddingsTranscriptReady = undefined;
+        console.error('Failed to migrate ad_embeddings:', err.message);
+        throw err;
+      }
+    })();
   }
   return adEmbeddingsTranscriptReady;
 }
@@ -3493,6 +3503,7 @@ app.post('/api/admin/retranscribe-ads', requireAuth, async (req, res) => {
     let transcribed = 0;
     let skipped = 0;
     let failed = 0;
+    let firstError = null;
 
     for (const ad of videoAds) {
       try {
@@ -3533,7 +3544,9 @@ app.post('/api/admin/retranscribe-ads', requireAuth, async (req, res) => {
         await new Promise(r => setTimeout(r, 1000));
 
       } catch (err) {
-        console.error(`[Retranscribe] ❌ ${ad.headline}: ${err.message}`);
+        const errMsg = `${ad.headline}: ${err.message}`;
+        console.error(`[Retranscribe] ❌ ${errMsg}`);
+        if (!firstError) firstError = errMsg;
         failed++;
       }
     }
@@ -3544,6 +3557,7 @@ app.post('/api/admin/retranscribe-ads', requireAuth, async (req, res) => {
       transcribed,
       skipped,
       failed,
+      firstError,
     });
 
   } catch (err) {

@@ -2491,7 +2491,10 @@ async function semanticSearch(queryText, limit = 12, category = null, forReranki
     sql += ` AND p.category = $${params.length}`;
   }
 
-  sql += ` AND (1 - (ae.embedding <=> $1::vector)) > 0.35`;
+  // Lower threshold for reranking (0.20) to get more candidates for BGE to evaluate
+  // Without reranking, use higher threshold (0.35) to filter noise
+  const similarityThreshold = forReranking ? 0.20 : 0.35;
+  sql += ` AND (1 - (ae.embedding <=> $1::vector)) > ${similarityThreshold}`;
   sql += ` ORDER BY ae.embedding <=> $1::vector LIMIT $${params.length + 1}`;
   params.push(fetchLimit);
 
@@ -2514,12 +2517,18 @@ app.post('/api/buyer/semantic-match', async (req, res) => {
     // Get candidates from pgvector (more if reranking)
     const candidates = await semanticSearch(searchText, limit, category, rerank);
 
+    console.log(`[SemanticSearch] Query: "${searchText}", pgvector returned ${candidates.length} candidates`);
+    if (candidates.length > 0) {
+      console.log(`[SemanticSearch] Top 5 similarities: ${candidates.slice(0, 5).map(c => c.similarity_score.toFixed(3)).join(', ')}`);
+    }
+
     // Apply BGE reranker if enabled (default: on)
     let matches;
     if (rerank && candidates.length > 0) {
       matches = await rerankResults(searchText, candidates, limit);
       // Update rank_position after reranking
       matches = matches.map((m, idx) => ({ ...m, rank_position: idx + 1 }));
+      console.log(`[Reranker] Reranked to ${matches.length} results, scores: ${matches.map(m => (m.rerank_score || 0).toFixed(3)).join(', ')}`);
     } else {
       matches = candidates.slice(0, limit);
     }

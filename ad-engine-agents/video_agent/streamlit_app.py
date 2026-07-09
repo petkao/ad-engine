@@ -1,13 +1,14 @@
 """
 PinkCurve Video Discovery - Streamlit Community Cloud App
 
-A video ad discovery assistant powered by LangGraph with direct API calls.
+A video ad discovery assistant powered by LangGraph with MCP server integration.
 """
 
 import re
 import json
 import traceback
 import streamlit as st
+import httpx
 
 # Page configuration - must be first Streamlit command
 st.set_page_config(
@@ -20,8 +21,64 @@ st.set_page_config(
 # Configuration
 # -----------------------------------------------------------------------------
 
-API_BASE_URL = "https://ad-engine-api-610270819686.us-west1.run.app"
+MCP_URL = "https://ad-engine-mcp-610270819686.us-west1.run.app/mcp"
 
+
+# -----------------------------------------------------------------------------
+# MCP Client
+# -----------------------------------------------------------------------------
+
+def _call_mcp_tool(tool_name: str, arguments: dict) -> dict:
+    """
+    Call an MCP tool on the PinkCurve MCP server.
+    Uses SSE streaming with explicit timeout and breaks on first data line.
+    """
+    try:
+        with httpx.stream(
+            "POST",
+            MCP_URL,
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                },
+                "id": 1
+            },
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            },
+            timeout=httpx.Timeout(connect=10.0, read=20.0, write=5.0, pool=5.0)
+        ) as response:
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    data = json.loads(line[6:])
+                    if "result" in data:
+                        # Parse the content from MCP response
+                        content = data["result"].get("content", [{}])
+                        if content:
+                            text = content[0].get("text", "{}")
+                            return json.loads(text)
+                    elif "error" in data:
+                        return {"error": data["error"]}
+                    # Break after first data line (SSE streams one result)
+                    break
+
+    except httpx.TimeoutException:
+        return {"error": "MCP timeout - try again"}
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON from MCP: {str(e)}"}
+    except Exception as e:
+        return {"error": f"MCP error: {str(e)}"}
+
+    return {"error": "No response from MCP server"}
+
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 
 def get_secret(key: str, default: str = None) -> str:
     """Get a secret from st.secrets or environment, with fallback."""
@@ -96,33 +153,6 @@ OPENAI_API_KEY = "sk-..."
     """)
 
 
-# -----------------------------------------------------------------------------
-# Direct API Calls (bypassing MCP for reliability)
-# -----------------------------------------------------------------------------
-
-def format_video_ads(ads: list, limit: int = 6) -> list:
-    """Filter to video ads and format for display."""
-    video_ads = [
-        ad for ad in ads
-        if ad.get("format") == "video" and ad.get("media_url")
-    ][:limit]
-
-    return [
-        {
-            "id": ad.get("id"),
-            "headline": ad.get("headline"),
-            "body_copy": ad.get("body_copy"),
-            "video_url": ad.get("media_url"),
-            "thumbnail_url": ad.get("thumbnail_url"),
-            "product_title": ad.get("product_title"),
-            "price": ad.get("price"),
-            "currency": ad.get("currency", "USD"),
-            "category": ad.get("category"),
-            "seller_name": ad.get("seller_name"),
-            "intent_tags": ad.get("intent_tags", []),
-        }
-        for ad in video_ads
-    ]
 
 
 # -----------------------------------------------------------------------------
@@ -132,7 +162,6 @@ def format_video_ads(ads: list, limit: int = 6) -> list:
 def setup_agent():
     """Initialize the LangGraph video agent. Returns (graph, error_message)."""
     try:
-        import httpx
         from langchain_openai import ChatOpenAI
         from langchain_core.tools import tool
         from langchain_core.messages import SystemMessage
@@ -173,77 +202,40 @@ RESPONSE FORMAT:
     def search_video_ads(query: str) -> str:
         """Search for video ads matching a buyer's shopping intent using semantic matching.
         Use when user describes what they're looking for."""
-        try:
-            response = httpx.post(
-                f"{API_BASE_URL}/api/buyer/semantic-match",
-                json={"query": query, "limit": 10},
-                timeout=10.0
-            )
-            data = response.json()
-            ads = data.get("matches", [])
-            video_ads = format_video_ads(ads, limit=6)
-
-            if not video_ads:
-                return f'No video ads found matching "{query}". Try browsing featured ads instead.'
-
-            return json.dumps({"query": query, "count": len(video_ads), "ads": video_ads}, indent=2)
-        except Exception as e:
-            return f"Error searching ads: {str(e)}"
+        result = _call_mcp_tool("search_video_ads_for_buyer", {"query": query, "limit": 6})
+        if "error" in result:
+            return f"Error searching ads: {result['error']}"
+        if not result.get("ads"):
+            return f'No video ads found matching "{query}". Try browsing featured ads instead.'
+        return json.dumps(result, indent=2)
 
     @tool
     def get_featured_video_ads() -> str:
         """Get currently featured video ads. Use for browsing when user has no specific intent."""
-        try:
-            response = httpx.get(
-                f"{API_BASE_URL}/api/buyer/featured",
-                timeout=10.0
-            )
-            ads = response.json()
-            video_ads = format_video_ads(ads, limit=10)
-
-            if not video_ads:
-                return "No video ads currently available."
-
-            return json.dumps({"featured": True, "count": len(video_ads), "ads": video_ads}, indent=2)
-        except Exception as e:
-            return f"Error fetching featured ads: {str(e)}"
+        result = _call_mcp_tool("get_featured_video_ads", {"limit": 10})
+        if "error" in result:
+            return f"Error fetching featured ads: {result['error']}"
+        if not result.get("ads"):
+            return "No video ads currently available."
+        return json.dumps(result, indent=2)
 
     @tool
     def get_video_ads_by_category(category: str) -> str:
         """Get video ads filtered by category. Use when user asks for a specific category."""
-        try:
-            response = httpx.get(
-                f"{API_BASE_URL}/api/buyer/featured",
-                timeout=10.0
-            )
-            ads = response.json()
-            # Filter by category
-            category_ads = [
-                ad for ad in ads
-                if ad.get("category", "").lower() == category.lower()
-                or category.lower() in ad.get("category", "").lower()
-            ]
-            video_ads = format_video_ads(category_ads, limit=6)
-
-            if not video_ads:
-                return f'No video ads found in category "{category}". Try listing categories to see what\'s available.'
-
-            return json.dumps({"category": category, "count": len(video_ads), "ads": video_ads}, indent=2)
-        except Exception as e:
-            return f"Error fetching ads by category: {str(e)}"
+        result = _call_mcp_tool("get_video_ads_by_category", {"category": category, "limit": 6})
+        if "error" in result:
+            return f"Error fetching ads by category: {result['error']}"
+        if not result.get("ads"):
+            return f'No video ads found in category "{category}". Try listing categories to see what\'s available.'
+        return json.dumps(result, indent=2)
 
     @tool
     def list_categories() -> str:
         """List all available ad categories. Use to help users discover what's available."""
-        try:
-            response = httpx.get(
-                f"{API_BASE_URL}/api/buyer/categories",
-                timeout=10.0
-            )
-            categories = response.json()
-            return json.dumps({"categories": categories}, indent=2)
-        except Exception as e:
-            return f"Error fetching categories: {str(e)}"
+        result = _call_mcp_tool("list_categories", {})
+        if "error" in result:
+            return f"Error fetching categories: {result['error']}"
+        return json.dumps(result, indent=2)
 
     tools = [search_video_ads, get_featured_video_ads, get_video_ads_by_category, list_categories]
 

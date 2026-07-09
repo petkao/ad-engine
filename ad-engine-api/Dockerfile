@@ -16,6 +16,7 @@ RUN npm ci --only=production
 COPY server.js ./
 COPY emailService.js ./
 COPY geoService.js ./
+COPY transcriptionService.js ./
 
 # Expose port
 EXPOSE 8080

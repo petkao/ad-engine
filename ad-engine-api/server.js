@@ -11,6 +11,7 @@ const {
 } = require('./emailService');
 const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
+const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -290,6 +291,24 @@ function ensureSubscriptionsTable() {
     });
   }
   return subscriptionsTableReady;
+}
+
+// ── AD EMBEDDINGS TRANSCRIPT COLUMNS ─────────────────────────
+let adEmbeddingsTranscriptReady;
+
+function ensureAdEmbeddingsTranscriptColumns() {
+  if (!adEmbeddingsTranscriptReady) {
+    adEmbeddingsTranscriptReady = pool.query(`
+      -- Add transcript columns to ad_embeddings if they don't exist
+      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS has_transcript BOOLEAN DEFAULT false;
+      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS transcript TEXT;
+      ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS embedding_text TEXT;
+    `).catch((err) => {
+      adEmbeddingsTranscriptReady = undefined;
+      console.error('Failed to add transcript columns to ad_embeddings:', err.message);
+    });
+  }
+  return adEmbeddingsTranscriptReady;
 }
 
 // ── STRIPE PRODUCTS INITIALIZATION ────────────────────────────
@@ -3446,6 +3465,93 @@ app.post('/api/seller/subscription/cancel', requireAuth, checkSellerApproved, as
   }
 });
 
+// ── ADMIN: RETRANSCRIBE VIDEO ADS ────────────────────────────
+// Regenerates embeddings for video ads using Whisper transcription
+app.post('/api/admin/retranscribe-ads', requireAuth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    await ensureAdEmbeddingsTranscriptColumns();
+
+    // Get all approved video ads
+    const { rows: videoAds } = await pool.query(`
+      SELECT a.id, a.headline, a.body_copy, a.intent_tags, a.format, a.media_url,
+             p.title as product_title, p.category, p.price,
+             s.name as seller_name, s.industry
+      FROM ads a
+      JOIN products p ON a.product_id = p.id
+      JOIN sellers s ON p.seller_id = s.id
+      WHERE a.status = 'active' AND a.format = 'video' AND a.media_url IS NOT NULL
+      ORDER BY a.created_at DESC
+    `);
+
+    console.log(`[Retranscribe] Found ${videoAds.length} video ads to process`);
+
+    let transcribed = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const ad of videoAds) {
+      try {
+        console.log(`[Retranscribe] Processing: ${ad.headline}`);
+
+        // Transcribe video
+        const transcript = await transcribeVideoAd(ad.media_url);
+        const hasTranscript = isMeaningfulTranscript(transcript);
+
+        // Build embedding text
+        const embeddingText = buildAdTextWithTranscript(ad, transcript);
+
+        // Generate new embedding
+        const embResponse = await openai.embeddings.create({
+          model: 'text-embedding-3-small',
+          input: embeddingText,
+        });
+        const embedding = embResponse.data[0].embedding;
+        const vectorStr = `[${embedding.join(',')}]`;
+
+        // Upsert embedding with transcript
+        await pool.query(`
+          INSERT INTO ad_embeddings (id, ad_id, embedding, model_version, has_transcript, transcript, embedding_text, created_at)
+          VALUES (uuid_generate_v4(), $1, $2::vector, 'text-embedding-3-small', $3, $4, $5, now())
+          ON CONFLICT (ad_id) DO UPDATE SET
+            embedding = $2::vector,
+            model_version = 'text-embedding-3-small',
+            has_transcript = $3,
+            transcript = $4,
+            embedding_text = $5,
+            created_at = now()
+        `, [ad.id, vectorStr, hasTranscript, transcript, embeddingText]);
+
+        transcribed++;
+        console.log(`[Retranscribe] ✅ ${ad.headline} (transcript: ${hasTranscript})`);
+
+        // Rate limit
+        await new Promise(r => setTimeout(r, 1000));
+
+      } catch (err) {
+        console.error(`[Retranscribe] ❌ ${ad.headline}: ${err.message}`);
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      total: videoAds.length,
+      transcribed,
+      skipped,
+      failed,
+    });
+
+  } catch (err) {
+    console.error('Retranscribe error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 
 // Initialize tables and Stripe products before starting server
@@ -3454,6 +3560,7 @@ async function startServer() {
     await ensureGeoLogTables();
     await ensureSubscriptionsTable();
     await ensureBillingSupportTicketsTable();
+    await ensureAdEmbeddingsTranscriptColumns();
     await ensureStripeProducts();
     console.log('Database tables and Stripe products initialized');
   } catch (err) {

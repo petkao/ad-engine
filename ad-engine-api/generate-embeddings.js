@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const OpenAI = require('openai');
+const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
 
 const pool = new Pool({
   host:     process.env.DB_HOST     || 'localhost',
@@ -11,23 +12,6 @@ const pool = new Pool({
 });
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// Build text representation of ad for embedding
-function buildAdText(ad) {
-  const tags = Array.isArray(ad.intent_tags)
-    ? ad.intent_tags.join(', ')
-    : (() => { try { return JSON.parse(ad.intent_tags).join(', '); } catch { return ad.intent_tags || ''; } })();
-
-  return [
-    `Headline: ${ad.headline}`,
-    `Description: ${ad.body_copy || ''}`,
-    `Product: ${ad.product_title}`,
-    `Category: ${ad.category}`,
-    `Industry: ${ad.industry || ''}`,
-    `Intent tags: ${tags}`,
-    `Price: $${ad.price}`,
-  ].filter(Boolean).join('\n');
-}
 
 async function generateEmbedding(text) {
   const response = await openai.embeddings.create({
@@ -41,10 +25,21 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function ensureTranscriptColumns() {
+  await pool.query(`
+    ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS has_transcript BOOLEAN DEFAULT false;
+    ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS transcript TEXT;
+    ALTER TABLE ad_embeddings ADD COLUMN IF NOT EXISTS embedding_text TEXT;
+  `);
+}
+
 async function generateAllEmbeddings() {
-  // Get all ads
+  // Ensure transcript columns exist
+  await ensureTranscriptColumns();
+
+  // Get all ads with video info
   const { rows: ads } = await pool.query(`
-    SELECT a.id, a.headline, a.body_copy, a.intent_tags, a.format,
+    SELECT a.id, a.headline, a.body_copy, a.intent_tags, a.format, a.media_url,
            p.title as product_title, p.category, p.price,
            s.name as seller_name, s.industry
     FROM ads a
@@ -53,11 +48,12 @@ async function generateAllEmbeddings() {
     ORDER BY a.created_at ASC
   `);
 
-  console.log(`\n🧠 Generating embeddings for ${ads.length} ads\n`);
+  console.log(`\n🧠 Generating embeddings for ${ads.length} ads (with Whisper transcription for videos)\n`);
 
   let success = 0;
   let failed  = 0;
   let skipped = 0;
+  let transcribed = 0;
 
   for (let i = 0; i < ads.length; i++) {
     const ad  = ads[i];
@@ -77,24 +73,38 @@ async function generateAllEmbeddings() {
     try {
       process.stdout.write(`${num} Embedding "${ad.headline}"... `);
 
-      const text      = buildAdText(ad);
-      const embedding = await generateEmbedding(text);
+      // For video ads, try to transcribe
+      let transcript = null;
+      if (ad.format === 'video' && ad.media_url) {
+        console.log('🎬 (transcribing video...)');
+        transcript = await transcribeVideoAd(ad.media_url);
+        if (isMeaningfulTranscript(transcript)) {
+          transcribed++;
+          console.log(`   📝 Transcript: "${transcript.substring(0, 50)}..."`);
+        }
+      }
+
+      // Build text with transcript
+      const embeddingText = buildAdTextWithTranscript(ad, transcript);
+      const embedding = await generateEmbedding(embeddingText);
 
       // Store embedding as pgvector format
       const vectorStr = `[${embedding.join(',')}]`;
+      const hasTranscript = isMeaningfulTranscript(transcript);
 
       await pool.query(
-        `INSERT INTO ad_embeddings (id, ad_id, embedding, model_version, created_at)
-         VALUES (uuid_generate_v4(), $1, $2::vector, 'text-embedding-3-small', now())
+        `INSERT INTO ad_embeddings (id, ad_id, embedding, model_version, has_transcript, transcript, embedding_text, created_at)
+         VALUES (uuid_generate_v4(), $1, $2::vector, 'text-embedding-3-small', $3, $4, $5, now())
          ON CONFLICT DO NOTHING`,
-        [ad.id, vectorStr]
+        [ad.id, vectorStr, hasTranscript, transcript, embeddingText]
       );
 
       console.log('✅');
       success++;
 
-      // Rate limit — 500ms between requests
-      if (i < ads.length - 1) await sleep(500);
+      // Rate limit — 500ms between requests (longer for videos due to transcription)
+      const delay = ad.format === 'video' ? 2000 : 500;
+      if (i < ads.length - 1) await sleep(delay);
 
     } catch (err) {
       console.log(`❌ Failed: ${err.message}`);
@@ -105,9 +115,12 @@ async function generateAllEmbeddings() {
 
   console.log(`\n🏁 Embedding generation complete!`);
   console.log(`   ✅ Generated: ${success}`);
+  console.log(`   🎬 Transcribed: ${transcribed}`);
   console.log(`   ⏭️  Skipped:  ${skipped}`);
   console.log(`   ❌ Failed:   ${failed}`);
-  console.log(`\n💰 Estimated cost: $${(success * 0.00002).toFixed(4)} (text-embedding-3-small is very cheap!)`);
+  console.log(`\n💰 Estimated cost:`);
+  console.log(`   - Embeddings: $${(success * 0.00002).toFixed(4)}`);
+  console.log(`   - Whisper: $${(transcribed * 0.006).toFixed(4)} (assuming ~1min avg)`);
 
   await pool.end();
 }

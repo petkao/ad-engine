@@ -3055,6 +3055,13 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
 
   try {
     await ensureSellerReviewsTable();
+    await ensureBuyerAccountsTable();
+
+    // Verify seller exists
+    const sellerCheck = await pool.query('SELECT id FROM sellers WHERE id = $1', [seller_id]);
+    if (sellerCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid seller_id' });
+    }
 
     // Check if buyer already reviewed this seller
     const existing = await pool.query(
@@ -3076,7 +3083,14 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
     res.json({ success: true, review: result.rows[0] });
   } catch (err) {
     console.error('Error creating review:', err);
-    res.status(500).json({ error: 'Failed to create review' });
+    // Return more specific error message
+    if (err.code === '23503') {
+      return res.status(400).json({ error: 'Invalid seller or buyer reference' });
+    }
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'You have already reviewed this seller' });
+    }
+    res.status(500).json({ error: `Failed to create review: ${err.message}` });
   }
 });
 

@@ -120,24 +120,37 @@ function ReviewModal({ ad, onClose, onSubmit }) {
       setError('Please select a rating');
       return;
     }
+    if (!ad.seller_id) {
+      setError('Missing seller information. Please try again.');
+      console.error('Review error: ad.seller_id is missing', ad);
+      return;
+    }
     setSubmitting(true);
     setError('');
     try {
       const token = localStorage.getItem('buyer_token');
+      if (!token) {
+        setError('Please sign in to leave a review');
+        setSubmitting(false);
+        return;
+      }
+      const payload = {
+        seller_id: ad.seller_id,
+        ad_id: ad.id,
+        rating,
+        comment: comment.trim() || null,
+      };
+      console.log('Submitting review:', payload);
       const res = await fetch(`${BASE}/api/buyer/reviews`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          seller_id: ad.seller_id,
-          ad_id: ad.id,
-          rating,
-          comment: comment.trim() || null,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
+      console.log('Review response:', res.status, data);
       if (res.ok) {
         onSubmit(data.review);
         onClose();
@@ -145,6 +158,7 @@ function ReviewModal({ ad, onClose, onSubmit }) {
         setError(data.error || 'Failed to submit review');
       }
     } catch (err) {
+      console.error('Review network error:', err);
       setError('Network error. Please try again.');
     } finally {
       setSubmitting(false);

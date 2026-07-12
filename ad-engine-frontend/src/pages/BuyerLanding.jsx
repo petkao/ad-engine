@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 const BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+const GOOGLE_CLIENT_ID = '331788802-drqf0pk3ab03c7o3v16rce4c65nvtr6k.apps.googleusercontent.com';
 
 function getDeviceId() {
   let id = localStorage.getItem('buyer_device_id');
@@ -192,6 +193,69 @@ export default function BuyerLanding() {
   const [selected, setSelected] = useState(null);
   const deviceId = getDeviceId();
 
+  // Buyer auth state
+  const [buyer, setBuyer] = useState(() => {
+    const saved = localStorage.getItem('buyer_data');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
+  const handleGoogleCallback = useCallback(async (response) => {
+    try {
+      const res = await fetch(`${BASE}/api/buyer/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: response.credential }),
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        localStorage.setItem('buyer_token', data.token);
+        localStorage.setItem('buyer_data', JSON.stringify(data.buyer));
+        setBuyer(data.buyer);
+      } else {
+        console.error('Google Sign-In failed:', data.error);
+      }
+    } catch (err) {
+      console.error('Google Sign-In error:', err);
+    }
+  }, []);
+
+  const handleSignOut = () => {
+    localStorage.removeItem('buyer_token');
+    localStorage.removeItem('buyer_data');
+    setBuyer(null);
+    setShowUserMenu(false);
+    // Revoke Google session if available
+    if (window.google?.accounts?.id) {
+      window.google.accounts.id.disableAutoSelect();
+    }
+  };
+
+  // Load Google Identity Services SDK
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (window.google && !buyer) {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: handleGoogleCallback,
+        });
+        window.google.accounts.id.renderButton(
+          document.getElementById('google-signin-btn'),
+          { theme: 'outline', size: 'medium', text: 'signin_with', shape: 'rectangular' }
+        );
+      }
+    };
+    document.body.appendChild(script);
+    return () => {
+      const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+      if (existing) existing.remove();
+    };
+  }, [buyer, handleGoogleCallback]);
+
   const doSearch = async (q, cat) => {
     if (!q && !cat) return;
     setLoading(true);
@@ -291,6 +355,55 @@ export default function BuyerLanding() {
           <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '8px' }}>by Peter Kao Associates</span>
         </div>
         <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          {/* Google Sign-In / User Menu */}
+          {buyer ? (
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setShowUserMenu(!showUserMenu)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '8px',
+                  background: 'none', border: '1px solid #e2e8f0', borderRadius: '8px',
+                  padding: '6px 12px', cursor: 'pointer', fontSize: '13px', color: '#475569'
+                }}
+              >
+                {buyer.avatar_url ? (
+                  <img src={buyer.avatar_url} alt="" style={{ width: '24px', height: '24px', borderRadius: '50%' }} />
+                ) : (
+                  <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px' }}>
+                    {buyer.name?.charAt(0)?.toUpperCase() || '?'}
+                  </div>
+                )}
+                <span style={{ maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{buyer.name}</span>
+                <span style={{ fontSize: '10px' }}>▼</span>
+              </button>
+              {showUserMenu && (
+                <div style={{
+                  position: 'absolute', top: '100%', right: 0, marginTop: '4px',
+                  background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)', minWidth: '160px', zIndex: 100
+                }}>
+                  <div style={{ padding: '12px', borderBottom: '1px solid #f1f5f9' }}>
+                    <div style={{ fontSize: '13px', fontWeight: '600', color: '#1e293b' }}>{buyer.name}</div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>{buyer.email}</div>
+                  </div>
+                  <button
+                    onClick={handleSignOut}
+                    style={{
+                      width: '100%', padding: '10px 12px', border: 'none', background: 'none',
+                      textAlign: 'left', cursor: 'pointer', fontSize: '13px', color: '#ef4444',
+                      borderRadius: '0 0 8px 8px'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div id="google-signin-btn" style={{ minWidth: '100px' }}></div>
+          )}
           <a href="/login" style={{
             fontSize: '13px',
             color: '#ec4899',
@@ -301,7 +414,7 @@ export default function BuyerLanding() {
             borderRadius: '8px',
             transition: 'all 0.2s'
           }}>
-            🏪 Seller Portal
+            Seller Portal
           </a>
           <a href="/register" style={{
             fontSize: '13px',

@@ -20,6 +20,7 @@ const session = require('express-session');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const { OAuth2Client } = require('google-auth-library');
 const PgSession = require('connect-pg-simple')(session);
 const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
@@ -292,6 +293,34 @@ function ensureSubscriptionsTable() {
     });
   }
   return subscriptionsTableReady;
+}
+
+// ── BUYER ACCOUNTS TABLE ──────────────────────────────────────
+let buyerAccountsTableReady;
+
+function ensureBuyerAccountsTable() {
+  if (!buyerAccountsTableReady) {
+    buyerAccountsTableReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS buyer_accounts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        google_id VARCHAR(255) UNIQUE,
+        email VARCHAR(255) UNIQUE,
+        name VARCHAR(255),
+        avatar_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        last_login TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_buyer_accounts_google_id
+        ON buyer_accounts (google_id);
+      CREATE INDEX IF NOT EXISTS idx_buyer_accounts_email
+        ON buyer_accounts (email);
+    `).catch((err) => {
+      buyerAccountsTableReady = undefined;
+      console.error('Failed to create buyer_accounts table:', err.message);
+    });
+  }
+  return buyerAccountsTableReady;
 }
 
 // ── AD EMBEDDINGS TRANSCRIPT COLUMNS ─────────────────────────
@@ -833,6 +862,33 @@ function requireAuth(req, res, next) {
 function safeUser(user) {
   const { password_hash, ...safe } = user;
   return safe;
+}
+
+// ── BUYER JWT AUTH ────────────────────────────────────────────
+function generateBuyerToken(buyer) {
+  return jwt.sign(
+    { id: buyer.id, email: buyer.email, type: 'buyer' },
+    process.env.SESSION_SECRET || 'ad-engine-secret-key',
+    { expiresIn: '30d' }
+  );
+}
+
+function verifyBuyerToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    try {
+      const decoded = jwt.verify(token, process.env.SESSION_SECRET || 'ad-engine-secret-key');
+      if (decoded.type !== 'buyer') {
+        return res.status(401).json({ error: 'Invalid buyer token' });
+      }
+      req.buyer = decoded;
+      return next();
+    } catch {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+  }
+  res.status(401).json({ error: 'Buyer authentication required' });
 }
 
 // ── AUTH ROUTES ───────────────────────────────────────────────
@@ -2505,6 +2561,74 @@ async function semanticSearch(queryText, limit = 12, category = null, forReranki
     rank_position: rank + 1,
   }));
 }
+
+// ── Buyer Google Sign-In ──────────────────────────────────────
+const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+app.post('/api/buyer/auth/google', async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) {
+    return res.status(400).json({ error: 'Google credential required' });
+  }
+
+  try {
+    // Ensure buyer_accounts table exists
+    await ensureBuyerAccountsTable();
+
+    // Verify the Google ID token
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+
+    const googleId = payload.sub;
+    const email = payload.email;
+    const name = payload.name || email.split('@')[0];
+    const avatarUrl = payload.picture || null;
+
+    // Check if buyer exists
+    let { rows } = await pool.query(
+      'SELECT * FROM buyer_accounts WHERE google_id = $1 OR email = $2',
+      [googleId, email]
+    );
+
+    let buyer;
+    if (rows.length > 0) {
+      // Update existing buyer
+      buyer = rows[0];
+      await pool.query(
+        'UPDATE buyer_accounts SET google_id = $1, name = $2, avatar_url = $3, last_login = NOW() WHERE id = $4',
+        [googleId, name, avatarUrl, buyer.id]
+      );
+      buyer.name = name;
+      buyer.avatar_url = avatarUrl;
+    } else {
+      // Create new buyer
+      const insertRes = await pool.query(
+        `INSERT INTO buyer_accounts (google_id, email, name, avatar_url)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [googleId, email, name, avatarUrl]
+      );
+      buyer = insertRes.rows[0];
+    }
+
+    const token = generateBuyerToken(buyer);
+
+    res.json({
+      token,
+      buyer: {
+        id: buyer.id,
+        name: buyer.name,
+        email: buyer.email,
+        avatar_url: buyer.avatar_url,
+      },
+    });
+  } catch (err) {
+    console.error('[BuyerAuth] Google Sign-In error:', err);
+    res.status(401).json({ error: 'Invalid Google credential' });
+  }
+});
 
 // ── Semantic search endpoint for buyer search ─────────────────
 app.post('/api/buyer/semantic-match', async (req, res) => {

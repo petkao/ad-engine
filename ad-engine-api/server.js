@@ -328,26 +328,39 @@ let sellerReviewsTableReady;
 
 function ensureSellerReviewsTable() {
   if (!sellerReviewsTableReady) {
-    sellerReviewsTableReady = pool.query(`
-      CREATE TABLE IF NOT EXISTS seller_reviews (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
-        buyer_account_id UUID REFERENCES buyer_accounts(id),
-        ad_id INTEGER REFERENCES ads(id),
-        rating INTEGER CHECK (rating BETWEEN 1 AND 5),
-        comment VARCHAR(280),
-        verified_match BOOLEAN DEFAULT true,
-        helpful_count INTEGER DEFAULT 0,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
+    sellerReviewsTableReady = (async () => {
+      // Check if table exists with wrong column type (ad_id should be UUID, not INTEGER)
+      const check = await pool.query(`
+        SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'seller_reviews' AND column_name = 'ad_id'
+      `);
+      if (check.rows.length > 0 && check.rows[0].data_type !== 'uuid') {
+        console.log('[Migration] Dropping seller_reviews table - ad_id has wrong type:', check.rows[0].data_type);
+        await pool.query('DROP TABLE IF EXISTS seller_reviews');
+      }
 
-      CREATE INDEX IF NOT EXISTS idx_seller_reviews_seller
-        ON seller_reviews (seller_id);
-      CREATE INDEX IF NOT EXISTS idx_seller_reviews_buyer
-        ON seller_reviews (buyer_account_id);
-      CREATE INDEX IF NOT EXISTS idx_seller_reviews_ad
-        ON seller_reviews (ad_id);
-    `).catch((err) => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS seller_reviews (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          seller_id UUID NOT NULL,
+          buyer_account_id UUID NOT NULL,
+          ad_id UUID,
+          rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+          comment VARCHAR(280),
+          verified_match BOOLEAN DEFAULT true,
+          helpful_count INTEGER DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_seller_reviews_seller
+          ON seller_reviews (seller_id);
+        CREATE INDEX IF NOT EXISTS idx_seller_reviews_buyer
+          ON seller_reviews (buyer_account_id);
+        CREATE INDEX IF NOT EXISTS idx_seller_reviews_ad
+          ON seller_reviews (ad_id);
+      `);
+      console.log('[Migration] seller_reviews table ready with UUID columns');
+    })().catch((err) => {
       sellerReviewsTableReady = undefined;
       console.error('Failed to create seller_reviews table:', err.message);
     });
@@ -3058,14 +3071,14 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
     await ensureBuyerAccountsTable();
 
     // Verify seller exists
-    const sellerCheck = await pool.query('SELECT id FROM sellers WHERE id = $1', [seller_id]);
+    const sellerCheck = await pool.query('SELECT id FROM sellers WHERE id = $1::uuid', [seller_id]);
     if (sellerCheck.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid seller_id' });
     }
 
     // Check if buyer already reviewed this seller
     const existing = await pool.query(
-      'SELECT id FROM seller_reviews WHERE seller_id = $1 AND buyer_account_id = $2',
+      'SELECT id FROM seller_reviews WHERE seller_id = $1::uuid AND buyer_account_id = $2::uuid',
       [seller_id, buyerAccountId]
     );
     if (existing.rows.length > 0) {
@@ -3075,7 +3088,7 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
     // Insert the review
     const result = await pool.query(
       `INSERT INTO seller_reviews (seller_id, buyer_account_id, ad_id, rating, comment, verified_match)
-       VALUES ($1, $2, $3, $4, $5, true)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, true)
        RETURNING *`,
       [seller_id, buyerAccountId, ad_id || null, rating, comment || null]
     );
@@ -3114,7 +3127,7 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
       LEFT JOIN ads a ON sr.ad_id = a.id
-      WHERE sr.seller_id = $1
+      WHERE sr.seller_id = $1::uuid
       ORDER BY sr.created_at DESC
     `, [seller_id]);
 
@@ -3124,7 +3137,7 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
         COUNT(*) as total_reviews,
         ROUND(AVG(rating)::numeric, 1) as average_rating
       FROM seller_reviews
-      WHERE seller_id = $1
+      WHERE seller_id = $1::uuid
     `, [seller_id]);
 
     // Format buyer names as "First L."
@@ -3970,6 +3983,8 @@ async function startServer() {
     await ensureSubscriptionsTable();
     await ensureBillingSupportTicketsTable();
     await ensureAdEmbeddingsTranscriptColumns();
+    await ensureBuyerAccountsTable();
+    await ensureSellerReviewsTable();
     await ensureStripeProducts();
     console.log('Database tables and Stripe products initialized');
   } catch (err) {
@@ -3989,3 +4004,4 @@ async function startServer() {
 }
 
 startServer();
+// Deployment 1783898744

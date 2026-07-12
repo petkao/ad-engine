@@ -241,6 +241,27 @@ function ReviewModal({ ad, onClose, onSubmit }) {
 
 // ── Ad Detail Modal ───────────────────────────────────────────
 function AdModal({ ad, onClose, buyer, onReviewClick }) {
+  const [reviews, setReviews] = useState([]);
+  const [avgRating, setAvgRating] = useState(0);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+
+  useEffect(() => {
+    if (ad?.id) {
+      setReviewsLoading(true);
+      fetch(`${BASE}/api/reviews/ad/${ad.id}`)
+        .then(r => r.json())
+        .then(data => {
+          setReviews(data.reviews || []);
+          setAvgRating(data.average_rating || 0);
+        })
+        .catch(() => {
+          setReviews([]);
+          setAvgRating(0);
+        })
+        .finally(() => setReviewsLoading(false));
+    }
+  }, [ad?.id]);
+
   const tags = Array.isArray(ad.intent_tags)
     ? ad.intent_tags
     : (() => { try { return JSON.parse(ad.intent_tags); } catch { return []; } })();
@@ -320,6 +341,37 @@ function AdModal({ ad, onClose, buyer, onReviewClick }) {
           <button onClick={onClose} style={{ width: '100%', background: 'none', border: 'none', color: '#94a3b8', fontSize: '14px', padding: '12px', cursor: 'pointer', marginTop: '8px' }}>
             Continue browsing
           </button>
+
+          {/* Reviews Section */}
+          {!reviewsLoading && reviews.length > 0 && (
+            <div style={{ marginTop: '20px', borderTop: '1px solid #e2e8f0', paddingTop: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                <span style={{ fontSize: '20px', color: '#fbbf24' }}>★</span>
+                <span style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b' }}>{avgRating.toFixed(1)}</span>
+                <span style={{ fontSize: '14px', color: '#64748b' }}>· {reviews.length} review{reviews.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {reviews.slice(0, 5).map(review => (
+                  <div key={review.id} style={{ background: '#f8fafc', borderRadius: '12px', padding: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
+                      {[1, 2, 3, 4, 5].map(star => (
+                        <span key={star} style={{ color: star <= review.rating ? '#fbbf24' : '#e2e8f0', fontSize: '14px' }}>★</span>
+                      ))}
+                      {review.verified_match && (
+                        <span style={{ marginLeft: '8px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✓ Verified</span>
+                      )}
+                    </div>
+                    {review.comment && (
+                      <p style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#334155', lineHeight: 1.5 }}>{review.comment}</p>
+                    )}
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      {review.buyer_display_name} · {new Date(review.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

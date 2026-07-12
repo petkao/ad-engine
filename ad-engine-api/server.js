@@ -1511,6 +1511,22 @@ app.get('/api/buyers', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Registered buyers (Google Sign-In)
+app.get('/api/admin/registered-buyers', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await ensureBuyerAccountsTable();
+    const { rows } = await pool.query(`
+      SELECT id, google_id, email, name, avatar_url, created_at, last_login
+      FROM buyer_accounts
+      ORDER BY created_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching registered buyers:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/stats', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const sellerFilter = await getSellerFilter(req);

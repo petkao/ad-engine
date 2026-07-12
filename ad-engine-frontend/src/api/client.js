@@ -52,6 +52,7 @@ export const api = {
   updateAd: (id, d) => request(`/ads/${id}`, { method: 'PUT', body: JSON.stringify(d) }),
   deleteAd: (id) => request(`/ads/${id}`, { method: 'DELETE' }),
   getBuyers: () => request('/buyers'),
+  getRegisteredBuyers: () => request('/admin/registered-buyers'),
   logClick: (ad_id, match_id) => request('/buyer/click', { method: 'POST', body: JSON.stringify({ ad_id, match_id }) }),
   getAdEvents: (params = {}) => {
     const queryParams = new URLSearchParams();

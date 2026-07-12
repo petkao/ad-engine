@@ -195,8 +195,13 @@ export default function BuyerLanding() {
 
   // Buyer auth state
   const [buyer, setBuyer] = useState(() => {
-    const saved = localStorage.getItem('buyer_data');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('buyer_data');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      localStorage.removeItem('buyer_data');
+      return null;
+    }
   });
   const [showUserMenu, setShowUserMenu] = useState(false);
 
@@ -231,29 +236,45 @@ export default function BuyerLanding() {
     }
   };
 
-  // Load Google Identity Services SDK
+  // Load Google Identity Services SDK (non-blocking, independent of ad loading)
   useEffect(() => {
+    if (buyer) return; // Skip if already signed in
+
+    const initGoogleSignIn = () => {
+      try {
+        const btnElement = document.getElementById('google-signin-btn');
+        if (window.google && btnElement) {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: handleGoogleCallback,
+          });
+          window.google.accounts.id.renderButton(btnElement, {
+            theme: 'outline',
+            size: 'medium',
+            text: 'signin_with',
+            shape: 'rectangular',
+          });
+        }
+      } catch (err) {
+        console.error('Google Sign-In init error:', err);
+      }
+    };
+
+    // Check if script already loaded
+    if (window.google?.accounts?.id) {
+      initGoogleSignIn();
+      return;
+    }
+
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     script.defer = true;
-    script.onload = () => {
-      if (window.google && !buyer) {
-        window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
-          callback: handleGoogleCallback,
-        });
-        window.google.accounts.id.renderButton(
-          document.getElementById('google-signin-btn'),
-          { theme: 'outline', size: 'medium', text: 'signin_with', shape: 'rectangular' }
-        );
-      }
-    };
+    script.onload = initGoogleSignIn;
+    script.onerror = () => console.error('Failed to load Google Sign-In SDK');
     document.body.appendChild(script);
-    return () => {
-      const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
-      if (existing) existing.remove();
-    };
+
+    // No cleanup - keep script loaded for future use
   }, [buyer, handleGoogleCallback]);
 
   const doSearch = async (q, cat) => {

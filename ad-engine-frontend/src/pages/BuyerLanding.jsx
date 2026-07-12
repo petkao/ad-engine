@@ -107,8 +107,126 @@ function AdListRow({ ad, rank, onClick }) {
   );
 }
 
+// ── Review Modal ──────────────────────────────────────────────
+function ReviewModal({ ad, onClose, onSubmit }) {
+  const [rating, setRating] = useState(0);
+  const [hoverRating, setHoverRating] = useState(0);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async () => {
+    if (rating === 0) {
+      setError('Please select a rating');
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      const token = localStorage.getItem('buyer_token');
+      const res = await fetch(`${BASE}/api/buyer/reviews`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          seller_id: ad.seller_id,
+          ad_id: ad.id,
+          rating,
+          comment: comment.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onSubmit(data.review);
+        onClose();
+      } else {
+        setError(data.error || 'Failed to submit review');
+      }
+    } catch (err) {
+      setError('Network error. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: 'white', borderRadius: '20px', width: '100%', maxWidth: '400px', padding: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', margin: 0 }}>Review {ad.seller_name}</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94a3b8' }}>✕</button>
+        </div>
+
+        <div style={{ marginBottom: '20px' }}>
+          <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '8px' }}>Your rating</div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[1, 2, 3, 4, 5].map(star => (
+              <button
+                key={star}
+                onClick={() => setRating(star)}
+                onMouseEnter={() => setHoverRating(star)}
+                onMouseLeave={() => setHoverRating(0)}
+                style={{
+                  background: 'none', border: 'none', fontSize: '28px', cursor: 'pointer',
+                  color: star <= (hoverRating || rating) ? '#fbbf24' : '#e2e8f0',
+                  transition: 'transform 0.1s',
+                  transform: star <= (hoverRating || rating) ? 'scale(1.1)' : 'scale(1)',
+                }}
+              >
+                ★
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: '20px' }}>
+          <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '8px' }}>Comment (optional)</div>
+          <textarea
+            value={comment}
+            onChange={e => setComment(e.target.value.slice(0, 280))}
+            placeholder="Share your experience with this seller..."
+            style={{
+              width: '100%', minHeight: '80px', padding: '12px', border: '1px solid #e2e8f0',
+              borderRadius: '12px', fontSize: '14px', resize: 'vertical', outline: 'none',
+              fontFamily: 'inherit',
+            }}
+          />
+          <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'right', marginTop: '4px' }}>
+            {comment.length}/280
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 12px', borderRadius: '8px', fontSize: '13px', marginBottom: '16px' }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button onClick={onClose} style={{
+            flex: 1, padding: '12px', border: '1px solid #e2e8f0', background: 'white',
+            borderRadius: '12px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', color: '#64748b',
+          }}>
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={submitting || rating === 0} style={{
+            flex: 1, padding: '12px', border: 'none', background: rating > 0 ? '#ec4899' : '#e2e8f0',
+            borderRadius: '12px', fontSize: '14px', fontWeight: '600', cursor: rating > 0 ? 'pointer' : 'not-allowed',
+            color: rating > 0 ? 'white' : '#94a3b8', opacity: submitting ? 0.7 : 1,
+          }}>
+            {submitting ? 'Submitting...' : 'Submit Review'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Ad Detail Modal ───────────────────────────────────────────
-function AdModal({ ad, onClose }) {
+function AdModal({ ad, onClose, buyer, onReviewClick }) {
   const tags = Array.isArray(ad.intent_tags)
     ? ad.intent_tags
     : (() => { try { return JSON.parse(ad.intent_tags); } catch { return []; } })();
@@ -173,6 +291,18 @@ function AdModal({ ad, onClose }) {
           <button style={{ width: '100%', background: '#2563eb', color: 'white', border: 'none', borderRadius: '16px', padding: '14px', fontWeight: '700', fontSize: '16px', cursor: 'pointer' }}>
             Shop Now — ${parseFloat(ad.price || 0).toFixed(2)}
           </button>
+          {buyer && (
+            <button
+              onClick={() => onReviewClick(ad)}
+              style={{
+                width: '100%', background: 'linear-gradient(135deg, #ec4899, #a855f7)', color: 'white',
+                border: 'none', borderRadius: '16px', padding: '14px', fontWeight: '700', fontSize: '16px',
+                cursor: 'pointer', marginTop: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              }}
+            >
+              ⭐ Leave a Review
+            </button>
+          )}
           <button onClick={onClose} style={{ width: '100%', background: 'none', border: 'none', color: '#94a3b8', fontSize: '14px', padding: '12px', cursor: 'pointer', marginTop: '8px' }}>
             Continue browsing
           </button>
@@ -191,6 +321,7 @@ export default function BuyerLanding() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [reviewAd, setReviewAd] = useState(null);
   const deviceId = getDeviceId();
 
   // Buyer auth state
@@ -588,7 +719,29 @@ export default function BuyerLanding() {
       </footer>
 
       {/* Ad detail modal */}
-      {selected && <AdModal ad={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <AdModal
+          ad={selected}
+          onClose={() => setSelected(null)}
+          buyer={buyer}
+          onReviewClick={(ad) => {
+            setSelected(null);
+            setReviewAd(ad);
+          }}
+        />
+      )}
+
+      {/* Review modal */}
+      {reviewAd && (
+        <ReviewModal
+          ad={reviewAd}
+          onClose={() => setReviewAd(null)}
+          onSubmit={(review) => {
+            console.log('Review submitted:', review);
+            setReviewAd(null);
+          }}
+        />
+      )}
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>

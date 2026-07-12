@@ -2577,7 +2577,7 @@ async function semanticSearch(queryText, limit = 12, category = null, forReranki
       a.id, a.headline, a.body_copy, a.format, a.media_url,
       a.cost_per_match, a.intent_tags, a.status, a.thumbnail_url,
       p.title as product_title, p.price, p.category, p.currency, p.product_url, p.image_url as product_image_url,
-      s.name as seller_name, s.industry, s.location as seller_location, s.is_verified as seller_verified,
+      s.id as seller_id, s.name as seller_name, s.industry, s.location as seller_location, s.is_verified as seller_verified,
       ae.transcript,
       1 - (ae.embedding <=> $1::vector) as similarity_score
     FROM ad_embeddings ae
@@ -2826,7 +2826,7 @@ app.get('/api/buyer/featured', async (req, res) => {
       SELECT a.id, a.headline, a.body_copy, a.format, a.media_url,
              a.cost_per_match, a.intent_tags, a.thumbnail_url,
              p.title as product_title, p.price, p.category, p.currency, p.product_url, p.image_url as product_image_url,
-             s.name as seller_name, s.location as seller_location, s.is_verified as seller_verified
+             s.id as seller_id, s.name as seller_name, s.location as seller_location, s.is_verified as seller_verified
       FROM ads a
       JOIN products p ON a.product_id = p.id
       JOIN sellers s ON p.seller_id = s.id

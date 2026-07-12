@@ -323,6 +323,38 @@ function ensureBuyerAccountsTable() {
   return buyerAccountsTableReady;
 }
 
+// ── SELLER REVIEWS TABLE ──────────────────────────────────────
+let sellerReviewsTableReady;
+
+function ensureSellerReviewsTable() {
+  if (!sellerReviewsTableReady) {
+    sellerReviewsTableReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS seller_reviews (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
+        buyer_account_id UUID REFERENCES buyer_accounts(id),
+        ad_id INTEGER REFERENCES ads(id),
+        rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+        comment VARCHAR(280),
+        verified_match BOOLEAN DEFAULT true,
+        helpful_count INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_seller_reviews_seller
+        ON seller_reviews (seller_id);
+      CREATE INDEX IF NOT EXISTS idx_seller_reviews_buyer
+        ON seller_reviews (buyer_account_id);
+      CREATE INDEX IF NOT EXISTS idx_seller_reviews_ad
+        ON seller_reviews (ad_id);
+    `).catch((err) => {
+      sellerReviewsTableReady = undefined;
+      console.error('Failed to create seller_reviews table:', err.message);
+    });
+  }
+  return sellerReviewsTableReady;
+}
+
 // ── AD EMBEDDINGS TRANSCRIPT COLUMNS ─────────────────────────
 let adEmbeddingsTranscriptReady;
 
@@ -3001,6 +3033,177 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── SELLER REVIEWS ROUTES ─────────────────────────────────────
+
+// Create a review (requires buyer authentication)
+app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
+  const { seller_id, ad_id, rating, comment } = req.body;
+  const buyerAccountId = req.buyer.id;
+
+  if (!seller_id || !rating) {
+    return res.status(400).json({ error: 'seller_id and rating are required' });
+  }
+  if (rating < 1 || rating > 5) {
+    return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+  }
+  if (comment && comment.length > 280) {
+    return res.status(400).json({ error: 'Comment must be 280 characters or less' });
+  }
+
+  try {
+    await ensureSellerReviewsTable();
+
+    // Check if buyer already reviewed this seller
+    const existing = await pool.query(
+      'SELECT id FROM seller_reviews WHERE seller_id = $1 AND buyer_account_id = $2',
+      [seller_id, buyerAccountId]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'You have already reviewed this seller' });
+    }
+
+    // Insert the review
+    const result = await pool.query(
+      `INSERT INTO seller_reviews (seller_id, buyer_account_id, ad_id, rating, comment, verified_match)
+       VALUES ($1, $2, $3, $4, $5, true)
+       RETURNING *`,
+      [seller_id, buyerAccountId, ad_id || null, rating, comment || null]
+    );
+
+    res.json({ success: true, review: result.rows[0] });
+  } catch (err) {
+    console.error('Error creating review:', err);
+    res.status(500).json({ error: 'Failed to create review' });
+  }
+});
+
+// Get reviews for a seller (public)
+app.get('/api/reviews/seller/:seller_id', async (req, res) => {
+  const { seller_id } = req.params;
+
+  try {
+    await ensureSellerReviewsTable();
+
+    const { rows } = await pool.query(`
+      SELECT
+        sr.id,
+        sr.rating,
+        sr.comment,
+        sr.verified_match,
+        sr.helpful_count,
+        sr.created_at,
+        ba.name as buyer_name,
+        a.headline as ad_headline
+      FROM seller_reviews sr
+      LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
+      LEFT JOIN ads a ON sr.ad_id = a.id
+      WHERE sr.seller_id = $1
+      ORDER BY sr.created_at DESC
+    `, [seller_id]);
+
+    // Calculate stats
+    const stats = await pool.query(`
+      SELECT
+        COUNT(*) as total_reviews,
+        ROUND(AVG(rating)::numeric, 1) as average_rating
+      FROM seller_reviews
+      WHERE seller_id = $1
+    `, [seller_id]);
+
+    // Format buyer names as "First L."
+    const reviews = rows.map(r => ({
+      ...r,
+      buyer_display_name: r.buyer_name
+        ? r.buyer_name.split(' ')[0] + (r.buyer_name.split(' ')[1] ? ' ' + r.buyer_name.split(' ')[1].charAt(0) + '.' : '')
+        : 'Anonymous'
+    }));
+
+    res.json({
+      reviews,
+      total_reviews: parseInt(stats.rows[0].total_reviews),
+      average_rating: parseFloat(stats.rows[0].average_rating) || 0
+    });
+  } catch (err) {
+    console.error('Error fetching seller reviews:', err);
+    res.status(500).json({ error: 'Failed to fetch reviews' });
+  }
+});
+
+// Get reviews for a specific ad (public)
+app.get('/api/reviews/ad/:ad_id', async (req, res) => {
+  const { ad_id } = req.params;
+
+  try {
+    await ensureSellerReviewsTable();
+
+    const { rows } = await pool.query(`
+      SELECT
+        sr.id,
+        sr.rating,
+        sr.comment,
+        sr.verified_match,
+        sr.helpful_count,
+        sr.created_at,
+        ba.name as buyer_name,
+        a.headline as ad_headline
+      FROM seller_reviews sr
+      LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
+      LEFT JOIN ads a ON sr.ad_id = a.id
+      WHERE sr.ad_id = $1
+      ORDER BY sr.created_at DESC
+    `, [ad_id]);
+
+    // Calculate stats for this ad
+    const stats = await pool.query(`
+      SELECT
+        COUNT(*) as total_reviews,
+        ROUND(AVG(rating)::numeric, 1) as average_rating
+      FROM seller_reviews
+      WHERE ad_id = $1
+    `, [ad_id]);
+
+    // Format buyer names as "First L."
+    const reviews = rows.map(r => ({
+      ...r,
+      buyer_display_name: r.buyer_name
+        ? r.buyer_name.split(' ')[0] + (r.buyer_name.split(' ')[1] ? ' ' + r.buyer_name.split(' ')[1].charAt(0) + '.' : '')
+        : 'Anonymous'
+    }));
+
+    res.json({
+      reviews,
+      total_reviews: parseInt(stats.rows[0].total_reviews),
+      average_rating: parseFloat(stats.rows[0].average_rating) || 0
+    });
+  } catch (err) {
+    console.error('Error fetching ad reviews:', err);
+    res.status(500).json({ error: 'Failed to fetch reviews' });
+  }
+});
+
+// Mark review as helpful (public, one per session)
+app.post('/api/reviews/:review_id/helpful', async (req, res) => {
+  const { review_id } = req.params;
+
+  try {
+    await ensureSellerReviewsTable();
+
+    const result = await pool.query(
+      'UPDATE seller_reviews SET helpful_count = helpful_count + 1 WHERE id = $1 RETURNING helpful_count',
+      [review_id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
+    res.json({ success: true, helpful_count: result.rows[0].helpful_count });
+  } catch (err) {
+    console.error('Error marking review helpful:', err);
+    res.status(500).json({ error: 'Failed to update review' });
   }
 });
 

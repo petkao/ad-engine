@@ -1,12 +1,13 @@
 // Twilio Phone Verification Service
-// Uses Twilio Verify API for SMS verification codes
+// Uses raw SMS with in-memory OTP storage (no Verify Service required)
 
 const twilio = require('twilio');
+const crypto = require('crypto');
 
 // Initialize Twilio client
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
-const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
+const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 
 let client = null;
 
@@ -17,8 +18,41 @@ function getClient() {
   return client;
 }
 
+// In-memory OTP storage: Map<phoneNumber, { code, expiresAt, attempts }>
+const otpStore = new Map();
+
+// OTP settings
+const OTP_LENGTH = 6;
+const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_ATTEMPTS = 3;
+
 /**
- * Send a verification code to a phone number
+ * Generate a cryptographically secure 6-digit OTP
+ * @returns {string} 6-digit code
+ */
+function generateOTP() {
+  // crypto.randomInt generates a random integer in range [0, 999999]
+  const code = crypto.randomInt(0, 1000000);
+  return code.toString().padStart(OTP_LENGTH, '0');
+}
+
+/**
+ * Clean up expired OTPs periodically
+ */
+function cleanupExpiredOTPs() {
+  const now = Date.now();
+  for (const [phone, data] of otpStore.entries()) {
+    if (data.expiresAt < now) {
+      otpStore.delete(phone);
+    }
+  }
+}
+
+// Run cleanup every 5 minutes
+setInterval(cleanupExpiredOTPs, 5 * 60 * 1000);
+
+/**
+ * Send a verification code to a phone number via SMS
  * @param {string} phoneNumber - Phone number in E.164 format (e.g., +14155551234)
  * @returns {Promise<{success: boolean, sid?: string, error?: string}>}
  */
@@ -30,9 +64,9 @@ async function sendVerificationCode(phoneNumber) {
     return { success: false, error: 'Twilio not configured' };
   }
 
-  if (!verifyServiceSid) {
-    console.log('[Twilio] Verify Service SID not configured');
-    return { success: false, error: 'Verify service not configured' };
+  if (!twilioPhoneNumber) {
+    console.log('[Twilio] Phone number not configured');
+    return { success: false, error: 'Twilio phone number not configured' };
   }
 
   // Validate phone number format
@@ -41,35 +75,44 @@ async function sendVerificationCode(phoneNumber) {
   }
 
   try {
-    console.log(`[Twilio] Sending verification to ${phoneNumber}`);
+    // Generate OTP
+    const code = generateOTP();
+    const expiresAt = Date.now() + OTP_EXPIRY_MS;
 
-    const verification = await twilioClient.verify.v2
-      .services(verifyServiceSid)
-      .verifications
-      .create({
-        to: phoneNumber,
-        channel: 'sms'
-      });
+    // Store OTP
+    otpStore.set(phoneNumber, { code, expiresAt, attempts: 0 });
 
-    console.log(`[Twilio] Verification sent, status: ${verification.status}, SID: ${verification.sid}`);
+    console.log(`[Twilio] Sending OTP to ${phoneNumber}`);
+
+    // Send SMS
+    const message = await twilioClient.messages.create({
+      body: `Your PinkCurve verification code is: ${code}. Valid for 10 minutes.`,
+      from: twilioPhoneNumber,
+      to: phoneNumber
+    });
+
+    console.log(`[Twilio] SMS sent, SID: ${message.sid}, status: ${message.status}`);
 
     return {
       success: true,
-      sid: verification.sid,
-      status: verification.status
+      sid: message.sid,
+      status: message.status
     };
   } catch (error) {
-    console.error('[Twilio] Error sending verification:', error.message);
+    console.error('[Twilio] Error sending SMS:', error.message);
+
+    // Clean up stored OTP on failure
+    otpStore.delete(phoneNumber);
 
     // Handle specific Twilio errors
-    if (error.code === 60200) {
+    if (error.code === 21211) {
       return { success: false, error: 'Invalid phone number' };
     }
-    if (error.code === 60203) {
-      return { success: false, error: 'Max send attempts reached. Please wait before retrying.' };
+    if (error.code === 21608) {
+      return { success: false, error: 'Cannot send to this phone number' };
     }
-    if (error.code === 60212) {
-      return { success: false, error: 'Too many requests. Please wait before retrying.' };
+    if (error.code === 21610) {
+      return { success: false, error: 'Phone number has opted out of messages' };
     }
 
     return { success: false, error: error.message || 'Failed to send verification code' };
@@ -83,56 +126,50 @@ async function sendVerificationCode(phoneNumber) {
  * @returns {Promise<{success: boolean, valid?: boolean, error?: string}>}
  */
 async function checkVerificationCode(phoneNumber, code) {
-  const twilioClient = getClient();
-
-  if (!twilioClient) {
-    console.log('[Twilio] Client not configured, skipping verification check');
-    return { success: false, error: 'Twilio not configured' };
-  }
-
-  if (!verifyServiceSid) {
-    return { success: false, error: 'Verify service not configured' };
-  }
-
   // Validate inputs
   if (!phoneNumber || !phoneNumber.match(/^\+[1-9]\d{6,14}$/)) {
     return { success: false, error: 'Invalid phone number format' };
   }
 
-  if (!code || !code.match(/^\d{4,8}$/)) {
-    return { success: false, error: 'Invalid verification code format' };
+  if (!code || !code.match(/^\d{6}$/)) {
+    return { success: false, error: 'Invalid verification code format. Must be 6 digits.' };
   }
 
-  try {
-    console.log(`[Twilio] Checking verification for ${phoneNumber}`);
+  const stored = otpStore.get(phoneNumber);
 
-    const verificationCheck = await twilioClient.verify.v2
-      .services(verifyServiceSid)
-      .verificationChecks
-      .create({
-        to: phoneNumber,
-        code: code
-      });
+  if (!stored) {
+    return { success: false, error: 'No verification code found. Please request a new code.' };
+  }
 
-    console.log(`[Twilio] Verification check status: ${verificationCheck.status}`);
+  // Check expiry
+  if (Date.now() > stored.expiresAt) {
+    otpStore.delete(phoneNumber);
+    return { success: false, error: 'Verification code expired. Please request a new code.' };
+  }
 
-    if (verificationCheck.status === 'approved') {
-      return { success: true, valid: true };
-    } else {
-      return { success: true, valid: false, error: 'Invalid or expired code' };
-    }
-  } catch (error) {
-    console.error('[Twilio] Error checking verification:', error.message);
+  // Check attempts
+  if (stored.attempts >= MAX_ATTEMPTS) {
+    otpStore.delete(phoneNumber);
+    return { success: false, error: 'Too many failed attempts. Please request a new code.' };
+  }
 
-    // Handle specific Twilio errors
-    if (error.code === 20404) {
-      return { success: false, error: 'Verification expired or not found. Please request a new code.' };
-    }
-    if (error.code === 60202) {
-      return { success: false, error: 'Max check attempts reached. Please request a new code.' };
-    }
+  // Verify code (constant-time comparison to prevent timing attacks)
+  const isValid = crypto.timingSafeEqual(
+    Buffer.from(code.padStart(OTP_LENGTH, '0')),
+    Buffer.from(stored.code.padStart(OTP_LENGTH, '0'))
+  );
 
-    return { success: false, error: error.message || 'Failed to check verification code' };
+  if (isValid) {
+    // Code verified - remove from store
+    otpStore.delete(phoneNumber);
+    console.log(`[Twilio] OTP verified for ${phoneNumber}`);
+    return { success: true, valid: true };
+  } else {
+    // Increment attempts
+    stored.attempts++;
+    otpStore.set(phoneNumber, stored);
+    console.log(`[Twilio] Invalid OTP attempt ${stored.attempts}/${MAX_ATTEMPTS} for ${phoneNumber}`);
+    return { success: true, valid: false, error: 'Invalid verification code' };
   }
 }
 
@@ -172,7 +209,7 @@ function formatPhoneE164(phone, countryCode = '1') {
  * @returns {boolean}
  */
 function isConfigured() {
-  return !!(accountSid && authToken && verifyServiceSid);
+  return !!(accountSid && authToken && twilioPhoneNumber);
 }
 
 module.exports = {

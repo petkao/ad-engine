@@ -338,6 +338,10 @@ function ensureBuyerAccountsTable() {
       -- Add ban columns for buyer fraud protection
       ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT false;
       ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS ban_reason VARCHAR(255);
+
+      -- Add phone verification columns
+      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT false;
     `).catch((err) => {
       buyerAccountsTableReady = undefined;
       console.error('Failed to create buyer_accounts table:', err.message);
@@ -1269,22 +1273,23 @@ app.post('/auth/resend-verification', requireAuth, resendVerificationLimiter, as
   }
 });
 
-// ── PHONE VERIFICATION ROUTES ────────────────────────────────
+// ── BUYER PHONE VERIFICATION ROUTES ──────────────────────────
 
-// Send phone verification code
-app.post('/auth/send-phone-verification', requireAuth, async (req, res) => {
+// Send phone verification code to buyer
+app.post('/api/buyer/verify-phone/send', verifyBuyerToken, async (req, res) => {
   const { phone } = req.body;
+  const buyerId = req.buyer.id;
 
   if (!phone) {
     return res.status(400).json({ error: 'Phone number is required' });
   }
 
   try {
-    await ensureGeoLogTables();
+    await ensureBuyerAccountsTable();
 
-    const seller = await pool.query('SELECT id, phone_verified FROM sellers WHERE id = $1', [req.user.id]);
-    if (seller.rows.length === 0) {
-      return res.status(404).json({ error: 'Seller not found' });
+    const buyer = await pool.query('SELECT id, phone_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
+    if (buyer.rows.length === 0) {
+      return res.status(404).json({ error: 'Buyer not found' });
     }
 
     // Check if Twilio is configured
@@ -1299,17 +1304,17 @@ app.post('/auth/send-phone-verification', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid phone number format' });
     }
 
-    // Save phone number to seller record
+    // Save phone number to buyer record
     await pool.query(
-      'UPDATE sellers SET phone = $2, updated_at = NOW() WHERE id = $1',
-      [req.user.id, formattedPhone]
+      'UPDATE buyer_accounts SET phone = $2 WHERE id = $1',
+      [buyerId, formattedPhone]
     );
 
     // Send verification code
     const result = await sendPhoneVerification(formattedPhone);
 
     if (result.success) {
-      console.log(`[PhoneVerification] Code sent to ${formattedPhone} for seller ${req.user.id}`);
+      console.log(`[PhoneVerification] Code sent to ${formattedPhone} for buyer ${buyerId}`);
       res.json({ success: true, message: 'Verification code sent' });
     } else {
       res.status(400).json({ error: result.error || 'Failed to send verification code' });
@@ -1320,28 +1325,29 @@ app.post('/auth/send-phone-verification', requireAuth, async (req, res) => {
   }
 });
 
-// Verify phone code
-app.post('/auth/verify-phone', requireAuth, async (req, res) => {
+// Verify phone code for buyer
+app.post('/api/buyer/verify-phone/confirm', verifyBuyerToken, async (req, res) => {
   const { code } = req.body;
+  const buyerId = req.buyer.id;
 
   if (!code) {
     return res.status(400).json({ error: 'Verification code is required' });
   }
 
   try {
-    await ensureGeoLogTables();
+    await ensureBuyerAccountsTable();
 
-    const seller = await pool.query('SELECT id, phone, phone_verified FROM sellers WHERE id = $1', [req.user.id]);
-    if (seller.rows.length === 0) {
-      return res.status(404).json({ error: 'Seller not found' });
+    const buyer = await pool.query('SELECT id, phone, phone_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
+    if (buyer.rows.length === 0) {
+      return res.status(404).json({ error: 'Buyer not found' });
     }
 
-    const phone = seller.rows[0].phone;
+    const phone = buyer.rows[0].phone;
     if (!phone) {
       return res.status(400).json({ error: 'No phone number on file. Please request a verification code first.' });
     }
 
-    if (seller.rows[0].phone_verified) {
+    if (buyer.rows[0].phone_verified) {
       return res.json({ success: true, message: 'Phone already verified' });
     }
 
@@ -1354,12 +1360,12 @@ app.post('/auth/verify-phone', requireAuth, async (req, res) => {
     const result = await checkPhoneVerification(phone, code);
 
     if (result.success && result.valid) {
-      // Update seller as phone verified
+      // Update buyer as phone verified
       await pool.query(
-        'UPDATE sellers SET phone_verified = true, updated_at = NOW() WHERE id = $1',
-        [req.user.id]
+        'UPDATE buyer_accounts SET phone_verified = true WHERE id = $1',
+        [buyerId]
       );
-      console.log(`[PhoneVerification] Phone verified for seller ${req.user.id}`);
+      console.log(`[PhoneVerification] Phone verified for buyer ${buyerId}`);
       res.json({ success: true, message: 'Phone number verified successfully' });
     } else {
       res.status(400).json({ error: result.error || 'Invalid verification code' });
@@ -1370,21 +1376,23 @@ app.post('/auth/verify-phone', requireAuth, async (req, res) => {
   }
 });
 
-// Get phone verification status
-app.get('/auth/phone-status', requireAuth, async (req, res) => {
-  try {
-    await ensureGeoLogTables();
+// Get buyer phone verification status
+app.get('/api/buyer/verify-phone/status', verifyBuyerToken, async (req, res) => {
+  const buyerId = req.buyer.id;
 
-    const seller = await pool.query(
-      'SELECT phone, phone_verified FROM sellers WHERE id = $1',
-      [req.user.id]
+  try {
+    await ensureBuyerAccountsTable();
+
+    const buyer = await pool.query(
+      'SELECT phone, phone_verified FROM buyer_accounts WHERE id = $1',
+      [buyerId]
     );
 
-    if (seller.rows.length === 0) {
-      return res.status(404).json({ error: 'Seller not found' });
+    if (buyer.rows.length === 0) {
+      return res.status(404).json({ error: 'Buyer not found' });
     }
 
-    const { phone, phone_verified } = seller.rows[0];
+    const { phone, phone_verified } = buyer.rows[0];
     res.json({
       phone: phone ? phone.replace(/(\+\d{1,3})\d{6}(\d{4})/, '$1******$2') : null,
       phone_verified: phone_verified || false,

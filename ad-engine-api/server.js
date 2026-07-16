@@ -3625,6 +3625,7 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
         sr.created_at,
         sr.location_verified,
         ba.name as buyer_name,
+        ba.phone_verified,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
@@ -3681,6 +3682,7 @@ app.get('/api/reviews/ad/:ad_id', async (req, res) => {
         sr.created_at,
         sr.location_verified,
         ba.name as buyer_name,
+        ba.phone_verified,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id

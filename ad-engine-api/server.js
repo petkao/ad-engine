@@ -18,6 +18,12 @@ const {
   checkBuyerAccountAge, checkReviewVelocity, checkClickVelocity,
   detectBot, checkBuyerBanned, calculateBuyerFraudScore, checkIpReputation
 } = require('./fraudDetectionService');
+const {
+  sendVerificationCode: sendPhoneVerification,
+  checkVerificationCode: checkPhoneVerification,
+  formatPhoneE164,
+  isConfigured: isTwilioConfigured
+} = require('./twilioService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -244,6 +250,10 @@ function ensureGeoLogTables() {
 
       -- Add approval status column for admin review workflow
       ALTER TABLE sellers ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) DEFAULT 'pending_review';
+
+      -- Add phone verification columns
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
+      ALTER TABLE sellers ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT false;
     `).catch((err) => {
       geoLogTablesReady = undefined;
       console.error('Failed to create geo log tables:', err.message);
@@ -1256,6 +1266,133 @@ app.post('/auth/resend-verification', requireAuth, resendVerificationLimiter, as
   } catch (err) {
     console.error('Resend verification error:', err);
     res.status(500).json({ error: 'Failed to resend verification email.' });
+  }
+});
+
+// ── PHONE VERIFICATION ROUTES ────────────────────────────────
+
+// Send phone verification code
+app.post('/auth/send-phone-verification', requireAuth, async (req, res) => {
+  const { phone } = req.body;
+
+  if (!phone) {
+    return res.status(400).json({ error: 'Phone number is required' });
+  }
+
+  try {
+    await ensureGeoLogTables();
+
+    const seller = await pool.query('SELECT id, phone_verified FROM sellers WHERE id = $1', [req.user.id]);
+    if (seller.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    // Check if Twilio is configured
+    if (!isTwilioConfigured()) {
+      console.log('[PhoneVerification] Twilio not configured, skipping');
+      return res.status(503).json({ error: 'Phone verification service not available' });
+    }
+
+    // Format phone to E.164
+    const formattedPhone = formatPhoneE164(phone);
+    if (!formattedPhone) {
+      return res.status(400).json({ error: 'Invalid phone number format' });
+    }
+
+    // Save phone number to seller record
+    await pool.query(
+      'UPDATE sellers SET phone = $2, updated_at = NOW() WHERE id = $1',
+      [req.user.id, formattedPhone]
+    );
+
+    // Send verification code
+    const result = await sendPhoneVerification(formattedPhone);
+
+    if (result.success) {
+      console.log(`[PhoneVerification] Code sent to ${formattedPhone} for seller ${req.user.id}`);
+      res.json({ success: true, message: 'Verification code sent' });
+    } else {
+      res.status(400).json({ error: result.error || 'Failed to send verification code' });
+    }
+  } catch (err) {
+    console.error('Send phone verification error:', err);
+    res.status(500).json({ error: 'Failed to send verification code' });
+  }
+});
+
+// Verify phone code
+app.post('/auth/verify-phone', requireAuth, async (req, res) => {
+  const { code } = req.body;
+
+  if (!code) {
+    return res.status(400).json({ error: 'Verification code is required' });
+  }
+
+  try {
+    await ensureGeoLogTables();
+
+    const seller = await pool.query('SELECT id, phone, phone_verified FROM sellers WHERE id = $1', [req.user.id]);
+    if (seller.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const phone = seller.rows[0].phone;
+    if (!phone) {
+      return res.status(400).json({ error: 'No phone number on file. Please request a verification code first.' });
+    }
+
+    if (seller.rows[0].phone_verified) {
+      return res.json({ success: true, message: 'Phone already verified' });
+    }
+
+    // Check if Twilio is configured
+    if (!isTwilioConfigured()) {
+      return res.status(503).json({ error: 'Phone verification service not available' });
+    }
+
+    // Verify the code
+    const result = await checkPhoneVerification(phone, code);
+
+    if (result.success && result.valid) {
+      // Update seller as phone verified
+      await pool.query(
+        'UPDATE sellers SET phone_verified = true, updated_at = NOW() WHERE id = $1',
+        [req.user.id]
+      );
+      console.log(`[PhoneVerification] Phone verified for seller ${req.user.id}`);
+      res.json({ success: true, message: 'Phone number verified successfully' });
+    } else {
+      res.status(400).json({ error: result.error || 'Invalid verification code' });
+    }
+  } catch (err) {
+    console.error('Verify phone error:', err);
+    res.status(500).json({ error: 'Failed to verify phone number' });
+  }
+});
+
+// Get phone verification status
+app.get('/auth/phone-status', requireAuth, async (req, res) => {
+  try {
+    await ensureGeoLogTables();
+
+    const seller = await pool.query(
+      'SELECT phone, phone_verified FROM sellers WHERE id = $1',
+      [req.user.id]
+    );
+
+    if (seller.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const { phone, phone_verified } = seller.rows[0];
+    res.json({
+      phone: phone ? phone.replace(/(\+\d{1,3})\d{6}(\d{4})/, '$1******$2') : null,
+      phone_verified: phone_verified || false,
+      twilio_configured: isTwilioConfigured()
+    });
+  } catch (err) {
+    console.error('Phone status error:', err);
+    res.status(500).json({ error: 'Failed to get phone status' });
   }
 });
 

@@ -3108,6 +3108,7 @@ app.post('/api/buyer/auth/google', async (req, res) => {
         name: buyer.name,
         email: buyer.email,
         avatar_url: buyer.avatar_url,
+        phone_verified: buyer.phone_verified || false,
       },
     });
   } catch (err) {

@@ -649,6 +649,7 @@ export default function BuyerLanding() {
         localStorage.setItem('buyer_token', data.token);
         localStorage.setItem('buyer_data', JSON.stringify(data.buyer));
         setBuyer(data.buyer);
+        setPhoneVerified(data.buyer.phone_verified || false);
       } else {
         console.error('Google Sign-In failed:', data.error);
       }

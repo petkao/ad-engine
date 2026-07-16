@@ -81,4 +81,7 @@ export const api = {
     const qs = queryParams.toString();
     return request(`/admin/fraud-logs${qs ? `?${qs}` : ''}`);
   },
+  // Buyer ban/unban endpoints
+  banBuyer: (id, reason) => request(`/admin/buyers/${id}/ban`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  unbanBuyer: (id) => request(`/admin/buyers/${id}/unban`, { method: 'POST' }),
 };

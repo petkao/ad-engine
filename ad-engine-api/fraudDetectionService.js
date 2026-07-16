@@ -320,6 +320,237 @@ async function logFraudCheck(pool, data) {
   }
 }
 
+// ── BUYER FRAUD DETECTION ────────────────────────────────────
+
+// Check for multiple buyer accounts from same IP
+async function checkBuyerMultipleAccounts(ip, pool) {
+  if (!ip || !pool || isPrivateIp(ip)) {
+    return { score: 0, details: 'Skipped', count: 0 };
+  }
+
+  try {
+    // Check buyer_geo_log for registrations from same IP
+    const result = await pool.query(`
+      SELECT COUNT(DISTINCT session_id) as account_count
+      FROM buyer_geo_log
+      WHERE ip = $1
+        AND created_at > NOW() - INTERVAL '24 hours'
+    `, [ip]);
+
+    const accountCount = parseInt(result.rows[0]?.account_count || 0);
+
+    let fraudScore = 0;
+    if (accountCount >= 5) {
+      fraudScore = 30;
+    } else if (accountCount >= 3) {
+      fraudScore = 15;
+    }
+
+    return {
+      score: fraudScore,
+      details: `${accountCount} buyer session(s) from this IP in last 24 hours`,
+      count: accountCount
+    };
+  } catch (error) {
+    console.error('Buyer multi-account check error:', error.message);
+    return { score: 0, details: `Error: ${error.message}`, count: 0 };
+  }
+}
+
+// Check buyer account age for review eligibility
+async function checkBuyerAccountAge(buyerId, pool) {
+  if (!buyerId || !pool) {
+    return { eligible: false, ageHours: 0, reason: 'Invalid input' };
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT created_at FROM buyer_accounts WHERE id = $1',
+      [buyerId]
+    );
+
+    if (result.rows.length === 0) {
+      return { eligible: false, ageHours: 0, reason: 'Buyer not found' };
+    }
+
+    const createdAt = new Date(result.rows[0].created_at);
+    const ageMs = Date.now() - createdAt.getTime();
+    const ageHours = ageMs / (1000 * 60 * 60);
+
+    if (ageHours < 24) {
+      return {
+        eligible: false,
+        ageHours,
+        reason: 'Account less than 24 hours old',
+        shouldFlag: true
+      };
+    }
+
+    return { eligible: true, ageHours, reason: null };
+  } catch (error) {
+    console.error('Account age check error:', error.message);
+    return { eligible: true, ageHours: 0, reason: `Error: ${error.message}` };
+  }
+}
+
+// Check review velocity (spam detection)
+async function checkReviewVelocity(buyerId, pool) {
+  if (!buyerId || !pool) {
+    return { suspicious: false, count: 0, reason: null };
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(*) as review_count
+      FROM seller_reviews
+      WHERE buyer_account_id = $1
+        AND created_at > NOW() - INTERVAL '24 hours'
+    `, [buyerId]);
+
+    const reviewCount = parseInt(result.rows[0]?.review_count || 0);
+
+    if (reviewCount >= 3) {
+      return {
+        suspicious: true,
+        count: reviewCount,
+        reason: `${reviewCount} reviews in last 24 hours - velocity bombing`
+      };
+    }
+
+    return { suspicious: false, count: reviewCount, reason: null };
+  } catch (error) {
+    console.error('Review velocity check error:', error.message);
+    return { suspicious: false, count: 0, reason: null };
+  }
+}
+
+// Check click velocity (click fraud detection)
+async function checkClickVelocity(sessionId, adId, ip, pool) {
+  if (!pool) {
+    return { suspicious: false, reason: null };
+  }
+
+  try {
+    const checks = [];
+
+    // Check clicks per minute from same session
+    if (sessionId) {
+      const sessionResult = await pool.query(`
+        SELECT COUNT(*) as click_count
+        FROM ad_events
+        WHERE buyer_session_id = $1
+          AND event_type = 'click'
+          AND timestamp > NOW() - INTERVAL '1 minute'
+      `, [sessionId]);
+      const sessionClicks = parseInt(sessionResult.rows[0]?.click_count || 0);
+      if (sessionClicks >= 10) {
+        checks.push(`${sessionClicks} clicks/min from session`);
+      }
+    }
+
+    // Check same IP clicking same ad repeatedly
+    if (ip && adId && !isPrivateIp(ip)) {
+      const repeatResult = await pool.query(`
+        SELECT COUNT(*) as click_count
+        FROM ad_events
+        WHERE buyer_ip = $1
+          AND ad_id = $2
+          AND event_type = 'click'
+          AND timestamp > NOW() - INTERVAL '1 hour'
+      `, [ip, adId]);
+      const repeatClicks = parseInt(repeatResult.rows[0]?.click_count || 0);
+      if (repeatClicks >= 5) {
+        checks.push(`${repeatClicks} clicks on same ad from IP`);
+      }
+    }
+
+    if (checks.length > 0) {
+      return {
+        suspicious: true,
+        reason: checks.join('; ')
+      };
+    }
+
+    return { suspicious: false, reason: null };
+  } catch (error) {
+    console.error('Click velocity check error:', error.message);
+    return { suspicious: false, reason: null };
+  }
+}
+
+// Bot detection based on user agent
+function detectBot(userAgent) {
+  if (!userAgent) {
+    return { isBot: true, reason: 'No user agent' };
+  }
+
+  const botPatterns = [
+    /bot/i, /crawler/i, /spider/i, /scraper/i,
+    /curl/i, /wget/i, /python-requests/i, /java\//i,
+    /headless/i, /phantom/i, /selenium/i
+  ];
+
+  for (const pattern of botPatterns) {
+    if (pattern.test(userAgent)) {
+      return { isBot: true, reason: `Matches pattern: ${pattern}` };
+    }
+  }
+
+  return { isBot: false, reason: null };
+}
+
+// Check if buyer is banned
+async function checkBuyerBanned(buyerId, pool) {
+  if (!buyerId || !pool) {
+    return { banned: false };
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT is_banned, ban_reason FROM buyer_accounts WHERE id = $1',
+      [buyerId]
+    );
+
+    if (result.rows.length > 0 && result.rows[0].is_banned) {
+      return {
+        banned: true,
+        reason: result.rows[0].ban_reason || 'Account suspended'
+      };
+    }
+
+    return { banned: false };
+  } catch (error) {
+    console.error('Buyer ban check error:', error.message);
+    return { banned: false };
+  }
+}
+
+// Calculate buyer fraud score for registration
+async function calculateBuyerFraudScore(ip, pool) {
+  const ipResult = await checkIpReputation(ip);
+  const multiResult = await checkBuyerMultipleAccounts(ip, pool);
+
+  const totalScore = Math.min(100, ipResult.score + multiResult.score);
+  let action = 'allow';
+  if (totalScore >= 60) {
+    action = 'block';
+  } else if (totalScore >= 30) {
+    action = 'review';
+  }
+
+  console.log(`[BuyerFraud] IP: ${ip}, Score: ${totalScore}, Action: ${action}`);
+
+  return {
+    totalScore,
+    action,
+    results: {
+      ipReputation: ipResult,
+      multipleAccounts: multiResult
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
 module.exports = {
   checkIpReputation,
   checkUrlSafety,
@@ -327,5 +558,13 @@ module.exports = {
   checkMultipleAccounts,
   calculateFraudScore,
   logFraudCheck,
-  isPrivateIp
+  isPrivateIp,
+  // Buyer fraud detection
+  checkBuyerMultipleAccounts,
+  checkBuyerAccountAge,
+  checkReviewVelocity,
+  checkClickVelocity,
+  detectBot,
+  checkBuyerBanned,
+  calculateBuyerFraudScore
 };

@@ -13,7 +13,11 @@ const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
 const { rerankResults, warmUpReranker, isRerankerReady } = require('./rerankerService');
-const { calculateFraudScore, logFraudCheck, checkUrlSafety, checkDomainAge } = require('./fraudDetectionService');
+const {
+  calculateFraudScore, logFraudCheck, checkUrlSafety, checkDomainAge,
+  checkBuyerAccountAge, checkReviewVelocity, checkClickVelocity,
+  detectBot, checkBuyerBanned, calculateBuyerFraudScore, checkIpReputation
+} = require('./fraudDetectionService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -191,6 +195,10 @@ function ensureGeoLogTables() {
       CREATE INDEX IF NOT EXISTS idx_ad_events_type
         ON ad_events (event_type, timestamp DESC);
 
+      -- Add click fraud detection columns
+      ALTER TABLE ad_events ADD COLUMN IF NOT EXISTS is_suspicious BOOLEAN DEFAULT false;
+      ALTER TABLE ad_events ADD COLUMN IF NOT EXISTS suspicion_reason VARCHAR(255);
+
       CREATE TABLE IF NOT EXISTS seller_geo_log (
         id SERIAL PRIMARY KEY,
         seller_id UUID REFERENCES sellers(id) ON DELETE CASCADE,
@@ -316,6 +324,10 @@ function ensureBuyerAccountsTable() {
         ON buyer_accounts (google_id);
       CREATE INDEX IF NOT EXISTS idx_buyer_accounts_email
         ON buyer_accounts (email);
+
+      -- Add ban columns for buyer fraud protection
+      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT false;
+      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS ban_reason VARCHAR(255);
     `).catch((err) => {
       buyerAccountsTableReady = undefined;
       console.error('Failed to create buyer_accounts table:', err.message);
@@ -359,6 +371,12 @@ function ensureSellerReviewsTable() {
           ON seller_reviews (buyer_account_id);
         CREATE INDEX IF NOT EXISTS idx_seller_reviews_ad
           ON seller_reviews (ad_id);
+
+        -- Add fraud protection columns
+        ALTER TABLE seller_reviews ADD COLUMN IF NOT EXISTS is_flagged BOOLEAN DEFAULT false;
+        ALTER TABLE seller_reviews ADD COLUMN IF NOT EXISTS flag_reason VARCHAR(255);
+        ALTER TABLE seller_reviews ADD COLUMN IF NOT EXISTS buyer_ip VARCHAR(45);
+        ALTER TABLE seller_reviews ADD COLUMN IF NOT EXISTS location_verified BOOLEAN DEFAULT true;
       `);
       console.log('[Migration] seller_reviews table ready with UUID columns');
     })().catch((err) => {
@@ -733,7 +751,7 @@ async function logBuyerGeo(sessionId, req) {
  * @param {object} params - Event parameters
  * @param {Request} req - Express request object
  */
-async function logAdEvent(eventType, params, req) {
+async function logAdEvent(eventType, params, req, fraudInfo = null) {
   try {
     await ensureGeoLogTables();
     const ip = getClientIp(req);
@@ -742,8 +760,8 @@ async function logAdEvent(eventType, params, req) {
     const referrer = req.headers['referer'] || req.headers['referrer'] || null;
 
     await pool.query(
-      `INSERT INTO ad_events (event_type, ad_id, seller_id, buyer_session_id, buyer_ip, buyer_city, buyer_state, buyer_country, user_agent, referrer, timestamp)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+      `INSERT INTO ad_events (event_type, ad_id, seller_id, buyer_session_id, buyer_ip, buyer_city, buyer_state, buyer_country, user_agent, referrer, is_suspicious, suspicion_reason, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())`,
       [
         eventType,
         params.adId || null,
@@ -754,10 +772,13 @@ async function logAdEvent(eventType, params, req) {
         geo.state || null,
         geo.country || null,
         userAgent,
-        referrer
+        referrer,
+        fraudInfo?.suspicious || false,
+        fraudInfo?.reason || null
       ]
     );
-    console.log(`Ad event logged: ${eventType} for ad ${params.adId || 'N/A'} from ${ip} (${geo.city || 'unknown'})`);
+    const suspiciousTag = fraudInfo?.suspicious ? ' [SUSPICIOUS]' : '';
+    console.log(`Ad event logged: ${eventType}${suspiciousTag} for ad ${params.adId || 'N/A'} from ${ip} (${geo.city || 'unknown'})`);
   } catch (err) {
     console.error('Failed to log ad event:', err.message);
   }
@@ -1687,13 +1708,60 @@ app.get('/api/admin/registered-buyers', requireAuth, requireAdmin, async (req, r
   try {
     await ensureBuyerAccountsTable();
     const { rows } = await pool.query(`
-      SELECT id, google_id, email, name, avatar_url, created_at, last_login
+      SELECT id, google_id, email, name, avatar_url, created_at, last_login, is_banned, ban_reason
       FROM buyer_accounts
       ORDER BY created_at DESC
     `);
     res.json(rows);
   } catch (err) {
     console.error('Error fetching registered buyers:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Ban a buyer account
+app.post('/api/admin/buyers/:id/ban', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  try {
+    await ensureBuyerAccountsTable();
+    const result = await pool.query(
+      `UPDATE buyer_accounts SET is_banned = true, ban_reason = $1 WHERE id = $2 RETURNING *`,
+      [reason || 'Violation of terms of service', id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Buyer not found' });
+    }
+
+    console.log(`[Admin] Buyer ${id} banned: ${reason || 'No reason provided'}`);
+    res.json({ success: true, buyer: result.rows[0] });
+  } catch (err) {
+    console.error('Error banning buyer:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unban a buyer account
+app.post('/api/admin/buyers/:id/unban', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await ensureBuyerAccountsTable();
+    const result = await pool.query(
+      `UPDATE buyer_accounts SET is_banned = false, ban_reason = NULL WHERE id = $1 RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Buyer not found' });
+    }
+
+    console.log(`[Admin] Buyer ${id} unbanned`);
+    res.json({ success: true, buyer: result.rows[0] });
+  } catch (err) {
+    console.error('Error unbanning buyer:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2811,6 +2879,7 @@ app.post('/api/buyer/auth/google', async (req, res) => {
   try {
     // Ensure buyer_accounts table exists
     await ensureBuyerAccountsTable();
+    await ensureFraudLogsTable();
 
     // Verify the Google ID token
     const ticket = await googleOAuthClient.verifyIdToken({
@@ -2823,6 +2892,7 @@ app.post('/api/buyer/auth/google', async (req, res) => {
     const email = payload.email;
     const name = payload.name || email.split('@')[0];
     const avatarUrl = payload.picture || null;
+    const clientIp = getClientIp(req);
 
     // Check if buyer exists
     let { rows } = await pool.query(
@@ -2831,9 +2901,17 @@ app.post('/api/buyer/auth/google', async (req, res) => {
     );
 
     let buyer;
+    let isNewRegistration = false;
+
     if (rows.length > 0) {
-      // Update existing buyer
+      // Existing buyer - check if banned
       buyer = rows[0];
+      if (buyer.is_banned) {
+        return res.status(403).json({
+          error: 'Account suspended',
+          reason: buyer.ban_reason || 'Contact support for assistance'
+        });
+      }
       await pool.query(
         'UPDATE buyer_accounts SET google_id = $1, name = $2, avatar_url = $3, last_login = NOW() WHERE id = $4',
         [googleId, name, avatarUrl, buyer.id]
@@ -2841,6 +2919,27 @@ app.post('/api/buyer/auth/google', async (req, res) => {
       buyer.name = name;
       buyer.avatar_url = avatarUrl;
     } else {
+      // New buyer - run fraud checks
+      isNewRegistration = true;
+      const fraudResult = await calculateBuyerFraudScore(clientIp, pool);
+
+      // Log the fraud check
+      await logFraudCheck(pool, {
+        ip: clientIp,
+        url: null,
+        entityType: 'buyer_registration',
+        entityId: null,
+        fraudResult
+      });
+
+      // Block high-risk registrations
+      if (fraudResult.action === 'block') {
+        console.log(`[BuyerFraud] Blocked registration from IP ${clientIp}, score: ${fraudResult.totalScore}`);
+        return res.status(403).json({
+          error: 'Registration temporarily unavailable. Please try again later.'
+        });
+      }
+
       // Create new buyer
       const insertRes = await pool.query(
         `INSERT INTO buyer_accounts (google_id, email, name, avatar_url)
@@ -2848,6 +2947,11 @@ app.post('/api/buyer/auth/google', async (req, res) => {
         [googleId, email, name, avatarUrl]
       );
       buyer = insertRes.rows[0];
+
+      // Update fraud log with buyer ID
+      if (fraudResult.action === 'review') {
+        console.log(`[BuyerFraud] Flagged registration for review: buyer ${buyer.id}, score: ${fraudResult.totalScore}`);
+      }
     }
 
     const token = generateBuyerToken(buyer);
@@ -3169,7 +3273,24 @@ No explanation, just the JSON array.`;
 // Log click event
 app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
   const { match_id, ad_id, session_id } = req.body;
+  const clientIp = getClientIp(req);
+  const userAgent = req.headers['user-agent'] || '';
+
   try {
+    // Bot detection
+    const botCheck = detectBot(userAgent);
+    if (botCheck.isBot) {
+      console.log(`[ClickFraud] Bot detected: ${botCheck.reason}, IP: ${clientIp}`);
+      // Log suspicious click but don't block (to track bot patterns)
+      if (ad_id) {
+        logAdEvent('click', { adId: ad_id, sessionId: session_id }, req, {
+          suspicious: true,
+          reason: `Bot: ${botCheck.reason}`
+        });
+      }
+      return res.json({ success: true }); // Silent success to not reveal detection
+    }
+
     let sessionIdForGeo = session_id || null;
     let sellerId = null;
 
@@ -3190,6 +3311,15 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
     }
 
     if (ad_id) {
+      // Check click velocity for fraud
+      const velocityCheck = await checkClickVelocity(sessionIdForGeo, ad_id, clientIp, pool);
+      let fraudInfo = null;
+
+      if (velocityCheck.suspicious) {
+        console.log(`[ClickFraud] Suspicious click: ${velocityCheck.reason}, IP: ${clientIp}`);
+        fraudInfo = { suspicious: true, reason: velocityCheck.reason };
+      }
+
       try {
         const result = await pool.query(
           `SELECT p.title, s.email, s.name, s.id as seller_id
@@ -3202,21 +3332,24 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
         if (result.rows[0]) {
           const { title, email, name, seller_id } = result.rows[0];
           sellerId = seller_id;
-          // Sanitize inputs before sending email
-          const sanitizedTitle = sanitizeForEmail(title);
-          const sanitizedName = sanitizeForEmail(name);
-          sendMatchNotificationEmail(email, sanitizedName, sanitizedTitle, 'click');
+
+          // Only send email for non-suspicious clicks
+          if (!fraudInfo?.suspicious) {
+            const sanitizedTitle = sanitizeForEmail(title);
+            const sanitizedName = sanitizeForEmail(name);
+            sendMatchNotificationEmail(email, sanitizedName, sanitizedTitle, 'click');
+          }
         }
       } catch (emailErr) {
         console.error('Could not send click email:', emailErr);
       }
 
-      // Log click event to ad_events
+      // Log click event to ad_events with fraud info
       logAdEvent('click', {
         adId: ad_id,
         sellerId,
         sessionId: sessionIdForGeo
-      }, req);
+      }, req, fraudInfo);
     }
 
     res.json({ success: true });
@@ -3231,6 +3364,8 @@ app.post('/api/buyer/click', emailRateLimiter, async (req, res) => {
 app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
   const { seller_id, ad_id, rating, comment } = req.body;
   const buyerAccountId = req.buyer.id;
+  const clientIp = getClientIp(req);
+  const userAgent = req.headers['user-agent'] || '';
 
   if (!seller_id || !rating) {
     return res.status(400).json({ error: 'seller_id and rating are required' });
@@ -3245,6 +3380,19 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
   try {
     await ensureSellerReviewsTable();
     await ensureBuyerAccountsTable();
+
+    // Check if buyer is banned
+    const banCheck = await checkBuyerBanned(buyerAccountId, pool);
+    if (banCheck.banned) {
+      return res.status(403).json({ error: 'Account suspended', reason: banCheck.reason });
+    }
+
+    // Bot detection
+    const botCheck = detectBot(userAgent);
+    if (botCheck.isBot) {
+      console.log(`[ReviewFraud] Bot detected: ${botCheck.reason}`);
+      return res.status(403).json({ error: 'Request blocked' });
+    }
 
     // Verify seller exists
     const sellerCheck = await pool.query('SELECT id FROM sellers WHERE id = $1::uuid', [seller_id]);
@@ -3261,18 +3409,49 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
       return res.status(409).json({ error: 'You have already reviewed this seller' });
     }
 
-    // Insert the review
+    // Fraud checks
+    let isFlagged = false;
+    let flagReason = null;
+    let locationVerified = true;
+
+    // Check account age
+    const ageCheck = await checkBuyerAccountAge(buyerAccountId, pool);
+    if (ageCheck.shouldFlag) {
+      isFlagged = true;
+      flagReason = ageCheck.reason;
+      console.log(`[ReviewFraud] New account review flagged: ${flagReason}`);
+    }
+
+    // Check review velocity
+    const velocityCheck = await checkReviewVelocity(buyerAccountId, pool);
+    if (velocityCheck.suspicious) {
+      isFlagged = true;
+      flagReason = velocityCheck.reason;
+      console.log(`[ReviewFraud] Velocity bombing detected: ${flagReason}`);
+    }
+
+    // Check IP reputation
+    const ipCheck = await checkIpReputation(clientIp);
+    if (ipCheck.abuseConfidenceScore >= 50) {
+      // High abuse score - block entirely
+      console.log(`[ReviewFraud] High abuse IP blocked: ${clientIp}, score: ${ipCheck.abuseConfidenceScore}`);
+      return res.status(403).json({ error: 'Review could not be submitted. Please try again later.' });
+    }
+    if (ipCheck.abuseConfidenceScore > 0 || ipCheck.details.includes('VPN')) {
+      locationVerified = false;
+    }
+
+    // Insert the review with fraud flags
     const result = await pool.query(
-      `INSERT INTO seller_reviews (seller_id, buyer_account_id, ad_id, rating, comment, verified_match)
-       VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, true)
+      `INSERT INTO seller_reviews (seller_id, buyer_account_id, ad_id, rating, comment, verified_match, is_flagged, flag_reason, buyer_ip, location_verified)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, true, $6, $7, $8, $9)
        RETURNING *`,
-      [seller_id, buyerAccountId, ad_id || null, rating, comment || null]
+      [seller_id, buyerAccountId, ad_id || null, rating, comment || null, isFlagged, flagReason, clientIp, locationVerified]
     );
 
     res.json({ success: true, review: result.rows[0] });
   } catch (err) {
     console.error('Error creating review:', err);
-    // Return more specific error message
     if (err.code === '23503') {
       return res.status(400).json({ error: 'Invalid seller or buyer reference' });
     }
@@ -3290,6 +3469,7 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
   try {
     await ensureSellerReviewsTable();
 
+    // Filter out flagged reviews for public viewing
     const { rows } = await pool.query(`
       SELECT
         sr.id,
@@ -3298,22 +3478,25 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
         sr.verified_match,
         sr.helpful_count,
         sr.created_at,
+        sr.location_verified,
         ba.name as buyer_name,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
       LEFT JOIN ads a ON sr.ad_id = a.id
       WHERE sr.seller_id = $1::uuid
+        AND (sr.is_flagged IS NULL OR sr.is_flagged = false)
       ORDER BY sr.created_at DESC
     `, [seller_id]);
 
-    // Calculate stats
+    // Calculate stats (only non-flagged reviews)
     const stats = await pool.query(`
       SELECT
         COUNT(*) as total_reviews,
         ROUND(AVG(rating)::numeric, 1) as average_rating
       FROM seller_reviews
       WHERE seller_id = $1::uuid
+        AND (is_flagged IS NULL OR is_flagged = false)
     `, [seller_id]);
 
     // Format buyer names as "First L."
@@ -3342,6 +3525,7 @@ app.get('/api/reviews/ad/:ad_id', async (req, res) => {
   try {
     await ensureSellerReviewsTable();
 
+    // Filter out flagged reviews for public viewing
     const { rows } = await pool.query(`
       SELECT
         sr.id,
@@ -3350,22 +3534,25 @@ app.get('/api/reviews/ad/:ad_id', async (req, res) => {
         sr.verified_match,
         sr.helpful_count,
         sr.created_at,
+        sr.location_verified,
         ba.name as buyer_name,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
       LEFT JOIN ads a ON sr.ad_id = a.id
       WHERE sr.ad_id = $1
+        AND (sr.is_flagged IS NULL OR sr.is_flagged = false)
       ORDER BY sr.created_at DESC
     `, [ad_id]);
 
-    // Calculate stats for this ad
+    // Calculate stats for this ad (only non-flagged reviews)
     const stats = await pool.query(`
       SELECT
         COUNT(*) as total_reviews,
         ROUND(AVG(rating)::numeric, 1) as average_rating
       FROM seller_reviews
       WHERE ad_id = $1
+        AND (is_flagged IS NULL OR is_flagged = false)
     `, [ad_id]);
 
     // Format buyer names as "First L."

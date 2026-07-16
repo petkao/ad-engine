@@ -362,12 +362,18 @@ function AdModal({ ad, onClose, buyer, onReviewClick }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {reviews.slice(0, 5).map(review => (
                   <div key={review.id} style={{ background: '#f8fafc', borderRadius: '12px', padding: '14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px', flexWrap: 'wrap' }}>
                       {[1, 2, 3, 4, 5].map(star => (
                         <span key={star} style={{ color: star <= review.rating ? '#fbbf24' : '#e2e8f0', fontSize: '14px' }}>★</span>
                       ))}
                       {review.verified_match && (
-                        <span style={{ marginLeft: '8px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✓ Verified</span>
+                        <span style={{ marginLeft: '8px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✓ Verified Purchase</span>
+                      )}
+                      {review.location_verified === true && (
+                        <span style={{ marginLeft: '4px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✓ Verified Location</span>
+                      )}
+                      {review.location_verified === false && (
+                        <span style={{ marginLeft: '4px', fontSize: '11px', color: '#f59e0b', background: '#fef3c7', padding: '2px 6px', borderRadius: '99px' }}>⚠ Unverified Location</span>
                       )}
                     </div>
                     {review.comment && (

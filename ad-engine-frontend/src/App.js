@@ -16,6 +16,7 @@ import VerifyEmail from './pages/VerifyEmail';
 import PendingApproval from './pages/PendingApproval';
 import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
 import Billing from './pages/Billing';
+import FraudLogs from './pages/FraudLogs';
 
 // Navigation items with role-based access
 // Sellers can ONLY see: Dashboard, Products, Ads, Analytics, Billing
@@ -31,15 +32,17 @@ const ALL_NAV = [
   { id: 'buyers', label: 'Buyers', icon: '👥', roles: ['admin'] },
   { id: 'events', label: 'Ad Event Log', icon: '📋', roles: ['admin'] },
   { id: 'geo', label: 'Geo Verification', icon: '📍', roles: ['admin'] },
+  { id: 'fraud', label: 'Fraud Logs', icon: '🛡️', roles: ['admin'] },
 ];
 
 // Pages that are admin-only (for route protection)
-const ADMIN_ONLY_PAGES = ['pending', 'sellers', 'buyers', 'events', 'geo'];
+const ADMIN_ONLY_PAGES = ['pending', 'sellers', 'buyers', 'events', 'geo', 'fraud'];
 
 const PAGES = {
   dashboard: Dashboard, analytics: Analytics, billing: Billing,
   pending: PendingApproval, sellers: Sellers, products: Products,
   ads: Ads, buyers: Buyers, events: AdEventLog, geo: GeoVerification,
+  fraud: FraudLogs,
 };
 
 function EmailVerificationBanner({ onResend }) {

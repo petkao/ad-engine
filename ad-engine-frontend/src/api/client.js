@@ -72,4 +72,13 @@ export const api = {
   rejectSeller: (id) => request(`/admin/sellers/${id}/reject`, { method: 'PUT' }),
   suspendSeller: (id) => request(`/admin/sellers/${id}/suspend`, { method: 'PUT' }),
   unsuspendSeller: (id) => request(`/admin/sellers/${id}/unsuspend`, { method: 'PUT' }),
+  // Fraud detection endpoints
+  getFraudLogs: (params = {}) => {
+    const queryParams = new URLSearchParams();
+    if (params.action) queryParams.append('action', params.action);
+    if (params.entity_type) queryParams.append('entity_type', params.entity_type);
+    if (params.limit) queryParams.append('limit', params.limit);
+    const qs = queryParams.toString();
+    return request(`/admin/fraud-logs${qs ? `?${qs}` : ''}`);
+  },
 };

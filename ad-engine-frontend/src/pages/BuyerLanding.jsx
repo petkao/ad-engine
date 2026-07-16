@@ -45,9 +45,10 @@ function AdCard({ ad, onClick }) {
           <img src={`${imageUrl}?t=${ad.updated_at || ''}`} alt={ad.headline}
             style={{ width: '100%', height: '160px', objectFit: 'contain', background: '#f8fafc', display: 'block' }} />
           {ad.format === 'video' && (
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
-              <div style={{ width: '48px', height: '48px', background: 'rgba(255,255,255,0.9)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>▶</div>
-            </div>
+            <>
+              <div style={{ position: 'absolute', top: '8px', left: '8px', background: 'rgba(236,72,153,0.9)', color: 'white', fontSize: '10px', fontWeight: 'bold', padding: '2px 6px', borderRadius: '4px' }}>VIDEO</div>
+              <div style={{ position: 'absolute', bottom: '8px', right: '8px', width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, #EC4899, #A855F7)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', cursor: 'pointer' }}>▶</div>
+            </>
           )}
         </div>
       )}
@@ -87,8 +88,16 @@ function AdListRow({ ad, rank, onClick }) {
       onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; }}>
       <span style={{ color: '#cbd5e1', fontWeight: '700', fontSize: '16px', width: '24px', flexShrink: 0 }}>#{rank}</span>
       {imageUrl && (
-        <img src={`${imageUrl}?t=${ad.updated_at || ''}`} alt=""
-          style={{ width: '60px', height: '60px', objectFit: 'contain', borderRadius: '10px', background: '#f8fafc', flexShrink: 0 }} />
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <img src={`${imageUrl}?t=${ad.updated_at || ''}`} alt=""
+            style={{ width: '60px', height: '60px', objectFit: 'contain', borderRadius: '10px', background: '#f8fafc', display: 'block' }} />
+          {ad.format === 'video' && (
+            <>
+              <div style={{ position: 'absolute', top: '2px', left: '2px', background: 'rgba(236,72,153,0.9)', color: 'white', fontSize: '7px', fontWeight: 'bold', padding: '1px 3px', borderRadius: '2px' }}>VIDEO</div>
+              <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(135deg, #EC4899, #A855F7)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: '8px', boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}>▶</div>
+            </>
+          )}
+        </div>
       )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' }}>

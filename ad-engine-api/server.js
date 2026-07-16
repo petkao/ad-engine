@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { resolveGeo, getClientIp } = require('./geoService');
 const { transcribeVideoAd, isMeaningfulTranscript, buildAdTextWithTranscript } = require('./transcriptionService');
 const { rerankResults, warmUpReranker, isRerankerReady } = require('./rerankerService');
+const { calculateFraudScore, logFraudCheck, checkUrlSafety, checkDomainAge } = require('./fraudDetectionService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -366,6 +367,47 @@ function ensureSellerReviewsTable() {
     });
   }
   return sellerReviewsTableReady;
+}
+
+// ── FRAUD LOGS TABLE ─────────────────────────────────────────
+let fraudLogsTableReady;
+
+function ensureFraudLogsTable() {
+  if (!fraudLogsTableReady) {
+    fraudLogsTableReady = pool.query(`
+      CREATE TABLE IF NOT EXISTS fraud_logs (
+        id SERIAL PRIMARY KEY,
+        ip_address VARCHAR(45),
+        url TEXT,
+        entity_type VARCHAR(20),
+        entity_id UUID,
+        total_score INTEGER,
+        action VARCHAR(20),
+        ip_reputation_score INTEGER,
+        ip_reputation_details TEXT,
+        url_safety_score INTEGER,
+        url_safety_details TEXT,
+        domain_age_score INTEGER,
+        domain_age_details TEXT,
+        multi_account_score INTEGER,
+        multi_account_details TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_fraud_logs_created_at
+        ON fraud_logs (created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_fraud_logs_entity
+        ON fraud_logs (entity_type, entity_id);
+      CREATE INDEX IF NOT EXISTS idx_fraud_logs_action
+        ON fraud_logs (action, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_fraud_logs_ip
+        ON fraud_logs (ip_address);
+    `).catch((err) => {
+      fraudLogsTableReady = undefined;
+      console.error('Failed to create fraud_logs table:', err.message);
+    });
+  }
+  return fraudLogsTableReady;
 }
 
 // ── AD EMBEDDINGS TRANSCRIPT COLUMNS ─────────────────────────
@@ -942,8 +984,30 @@ app.post('/auth/register', async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   try {
-    // Ensure email verification columns exist
+    // Ensure email verification columns and fraud logs table exist
     await ensureGeoLogTables();
+    await ensureFraudLogsTable();
+
+    // Fraud detection check before registration
+    const clientIp = getClientIp(req);
+    const fraudResult = await calculateFraudScore(clientIp, null, pool);
+
+    // Block registration if fraud score >= 60
+    if (fraudResult.action === 'block') {
+      // Log the blocked attempt
+      await logFraudCheck(pool, {
+        ip: clientIp,
+        url: null,
+        entityType: 'registration',
+        entityId: null,
+        fraudResult
+      });
+      console.log(`[Fraud] Blocked registration attempt from IP ${clientIp}, score: ${fraudResult.totalScore}`);
+      return res.status(403).json({
+        error: 'Registration temporarily unavailable. Please try again later or contact support.',
+        fraud_blocked: true
+      });
+    }
 
     const existing = await pool.query('SELECT id FROM seller_accounts WHERE email=$1', [email]);
     if (existing.rows.length) return res.status(409).json({ error: 'An account with this email already exists.' });
@@ -966,6 +1030,18 @@ app.post('/auth/register', async (req, res) => {
 
     // Log seller geolocation on registration (pass claimed location for comparison)
     logSellerGeo(sellerRes.rows[0].id, req, location || null);
+
+    // Log fraud check result (for review-flagged or allowed registrations)
+    await logFraudCheck(pool, {
+      ip: clientIp,
+      url: null,
+      entityType: 'registration',
+      entityId: sellerRes.rows[0].id,
+      fraudResult
+    });
+    if (fraudResult.action === 'review') {
+      console.log(`[Fraud] Flagged registration for review: seller ${sellerRes.rows[0].id}, score: ${fraudResult.totalScore}`);
+    }
 
     // Send verification email
     sendVerificationEmail(email, name, verificationToken);
@@ -1504,6 +1580,56 @@ app.post('/api/ads', requireAuth, checkSellerApproved, async (req, res) => {
     }
 
     const { product_id, format, headline, body_copy, intent_tags, cost_per_match, daily_budget, total_budget } = req.body;
+
+    // Fraud detection: check product URL safety and domain age
+    await ensureFraudLogsTable();
+    const productRes = await pool.query('SELECT product_url FROM products WHERE id = $1', [product_id]);
+    const productUrl = productRes.rows[0]?.product_url;
+
+    if (productUrl) {
+      const [urlSafetyResult, domainAgeResult] = await Promise.all([
+        checkUrlSafety(productUrl),
+        checkDomainAge(productUrl)
+      ]);
+
+      const clientIp = getClientIp(req);
+      const totalScore = urlSafetyResult.score + domainAgeResult.score;
+      const action = totalScore >= 60 ? 'block' : (totalScore >= 30 ? 'review' : 'allow');
+
+      // Log the fraud check
+      await logFraudCheck(pool, {
+        ip: clientIp,
+        url: productUrl,
+        entityType: 'ad_submission',
+        entityId: null, // Ad not created yet
+        fraudResult: {
+          totalScore,
+          action,
+          results: {
+            ipReputation: { score: 0, details: 'Not checked for ads' },
+            urlSafety: urlSafetyResult,
+            domainAge: domainAgeResult,
+            multipleAccounts: { score: 0, details: 'Not checked for ads', count: 0 }
+          },
+          timestamp: new Date().toISOString()
+        }
+      });
+
+      // Block ad creation if URL is flagged as unsafe by Google Safe Browsing
+      if (!urlSafetyResult.safe) {
+        console.log(`[Fraud] Blocked ad submission with unsafe URL: ${productUrl}`);
+        return res.status(403).json({
+          error: 'The product URL has been flagged as potentially unsafe. Please verify your URL and try again.',
+          fraud_blocked: true
+        });
+      }
+
+      // Log warning for new domains but don't block
+      if (domainAgeResult.score >= 15) {
+        console.log(`[Fraud] Ad submission from new domain: ${productUrl}, age score: ${domainAgeResult.score}`);
+      }
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO ads (id,product_id,format,headline,body_copy,intent_tags,cost_per_match,daily_budget,total_budget,spent,status,created_at,updated_at)
        VALUES (uuid_generate_v4(),$1,$2,$3,$4,$5,$6,$7,$8,0,'active',now(),now()) RETURNING *`,
@@ -2398,6 +2524,56 @@ app.get('/api/admin/buyer-geo-logs', requireAuth, requireAdmin, async (req, res)
     res.json(rows);
   } catch (err) {
     console.error('Error fetching buyer geo logs:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get fraud logs
+app.get('/api/admin/fraud-logs', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await ensureFraudLogsTable();
+    const { action, entity_type, limit = 100 } = req.query;
+
+    let sql = `
+      SELECT
+        id,
+        ip_address,
+        url,
+        entity_type,
+        entity_id,
+        total_score,
+        action,
+        ip_reputation_score,
+        ip_reputation_details,
+        url_safety_score,
+        url_safety_details,
+        domain_age_score,
+        domain_age_details,
+        multi_account_score,
+        multi_account_details,
+        created_at
+      FROM fraud_logs
+      WHERE 1=1
+    `;
+    const params = [];
+    let paramIndex = 1;
+
+    if (action) {
+      sql += ` AND action = $${paramIndex++}`;
+      params.push(action);
+    }
+    if (entity_type) {
+      sql += ` AND entity_type = $${paramIndex++}`;
+      params.push(entity_type);
+    }
+
+    sql += ` ORDER BY created_at DESC LIMIT $${paramIndex}`;
+    params.push(parseInt(limit, 10));
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching fraud logs:', err);
     res.status(500).json({ error: err.message });
   }
 });

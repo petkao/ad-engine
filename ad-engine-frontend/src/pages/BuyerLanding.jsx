@@ -103,7 +103,10 @@ function AdListRow({ ad, rank, onClick }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' }}>
           <div>
             <div style={{ fontWeight: '600', fontSize: '14px', color: '#1e293b' }}>{ad.headline}</div>
-            <div style={{ fontSize: '11px', color: '#94a3b8' }}>{ad.seller_name} · {ad.product_title}</div>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+              {ad.seller_name} · {ad.product_title}
+              {ad.seller_location && <span> · 📍 {ad.seller_location}</span>}
+            </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
             <div style={{ fontWeight: '700', color: '#2563eb' }}>${parseFloat(ad.price || 0).toFixed(2)}</div>
@@ -438,7 +441,11 @@ function AdModal({ ad, onClose, buyer, emailOtpVerified, onReviewClick }) {
           <div style={{ fontSize: '11px', color: '#16a34a', fontWeight: '600', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             <span>Sponsored · {ad.seller_name}</span>
             {ad.seller_verified && <span style={{ background: '#dcfce7', color: '#16a34a', fontSize: '10px', padding: '2px 8px', borderRadius: '99px' }}>✅ Verified Seller</span>}
-            {ad.seller_location && <span style={{ color: '#64748b', fontSize: '11px' }}>📍 {ad.seller_location}</span>}
+            {ad.seller_location && (
+              <span style={{ color: '#64748b', fontSize: '11px' }}>
+                📍 {ad.seller_location}{ad.seller_geo_verified && ' ✅'}
+              </span>
+            )}
           </div>
           <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#1e293b', marginBottom: '8px' }}>{ad.headline}</h2>
           <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '20px', lineHeight: 1.6 }}>{ad.body_copy}</p>

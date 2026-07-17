@@ -19,11 +19,10 @@ const {
   detectBot, checkBuyerBanned, calculateBuyerFraudScore, checkIpReputation
 } = require('./fraudDetectionService');
 const {
-  sendVerificationCode: sendPhoneVerification,
-  checkVerificationCode: checkPhoneVerification,
-  formatPhoneE164,
-  isConfigured: isTwilioConfigured
-} = require('./twilioService');
+  sendVerificationCode: sendEmailOTP,
+  checkVerificationCode: checkEmailOTP,
+  isConfigured: isOTPConfigured
+} = require('./otpService');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -339,9 +338,8 @@ function ensureBuyerAccountsTable() {
       ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT false;
       ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS ban_reason VARCHAR(255);
 
-      -- Add phone verification columns
-      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS phone VARCHAR(20);
-      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT false;
+      -- Add email OTP verification column (replaces phone verification)
+      ALTER TABLE buyer_accounts ADD COLUMN IF NOT EXISTS email_otp_verified BOOLEAN DEFAULT false;
     `).catch((err) => {
       buyerAccountsTableReady = undefined;
       console.error('Failed to create buyer_accounts table:', err.message);
@@ -1273,60 +1271,50 @@ app.post('/auth/resend-verification', requireAuth, resendVerificationLimiter, as
   }
 });
 
-// ── BUYER PHONE VERIFICATION ROUTES ──────────────────────────
+// ── BUYER EMAIL OTP VERIFICATION ROUTES ──────────────────────
 
-// Send phone verification code to buyer
-app.post('/api/buyer/verify-phone/send', verifyBuyerToken, async (req, res) => {
-  const { phone } = req.body;
+// Send email OTP verification code to buyer
+app.post('/api/buyer/verify-email-otp/send', verifyBuyerToken, async (req, res) => {
   const buyerId = req.buyer.id;
-
-  if (!phone) {
-    return res.status(400).json({ error: 'Phone number is required' });
-  }
 
   try {
     await ensureBuyerAccountsTable();
 
-    const buyer = await pool.query('SELECT id, phone_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
+    const buyer = await pool.query('SELECT id, email, name, email_otp_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
     if (buyer.rows.length === 0) {
       return res.status(404).json({ error: 'Buyer not found' });
     }
 
-    // Check if Twilio is configured
-    if (!isTwilioConfigured()) {
-      console.log('[PhoneVerification] Twilio not configured, skipping');
-      return res.status(503).json({ error: 'Phone verification service not available' });
+    if (buyer.rows[0].email_otp_verified) {
+      return res.json({ success: true, message: 'Email already verified' });
     }
 
-    // Format phone to E.164
-    const formattedPhone = formatPhoneE164(phone);
-    if (!formattedPhone) {
-      return res.status(400).json({ error: 'Invalid phone number format' });
+    // Check if OTP service is configured
+    if (!isOTPConfigured()) {
+      console.log('[EmailOTP] Resend not configured, skipping');
+      return res.status(503).json({ error: 'Email verification service not available' });
     }
 
-    // Save phone number to buyer record
-    await pool.query(
-      'UPDATE buyer_accounts SET phone = $2 WHERE id = $1',
-      [buyerId, formattedPhone]
-    );
+    const email = buyer.rows[0].email;
+    const name = buyer.rows[0].name || 'there';
 
     // Send verification code
-    const result = await sendPhoneVerification(formattedPhone);
+    const result = await sendEmailOTP(email, name);
 
     if (result.success) {
-      console.log(`[PhoneVerification] Code sent to ${formattedPhone} for buyer ${buyerId}`);
-      res.json({ success: true, message: 'Verification code sent' });
+      console.log(`[EmailOTP] Code sent to ${email} for buyer ${buyerId}`);
+      res.json({ success: true, sent: true, message: 'Verification code sent to your email' });
     } else {
       res.status(400).json({ error: result.error || 'Failed to send verification code' });
     }
   } catch (err) {
-    console.error('Send phone verification error:', err);
+    console.error('Send email OTP error:', err);
     res.status(500).json({ error: 'Failed to send verification code' });
   }
 });
 
-// Verify phone code for buyer
-app.post('/api/buyer/verify-phone/confirm', verifyBuyerToken, async (req, res) => {
+// Verify email OTP code for buyer
+app.post('/api/buyer/verify-email-otp/confirm', verifyBuyerToken, async (req, res) => {
   const { code } = req.body;
   const buyerId = req.buyer.id;
 
@@ -1337,54 +1325,46 @@ app.post('/api/buyer/verify-phone/confirm', verifyBuyerToken, async (req, res) =
   try {
     await ensureBuyerAccountsTable();
 
-    const buyer = await pool.query('SELECT id, phone, phone_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
+    const buyer = await pool.query('SELECT id, email, email_otp_verified FROM buyer_accounts WHERE id = $1', [buyerId]);
     if (buyer.rows.length === 0) {
       return res.status(404).json({ error: 'Buyer not found' });
     }
 
-    const phone = buyer.rows[0].phone;
-    if (!phone) {
-      return res.status(400).json({ error: 'No phone number on file. Please request a verification code first.' });
+    if (buyer.rows[0].email_otp_verified) {
+      return res.json({ success: true, verified: true, message: 'Email already verified' });
     }
 
-    if (buyer.rows[0].phone_verified) {
-      return res.json({ success: true, message: 'Phone already verified' });
-    }
-
-    // Check if Twilio is configured
-    if (!isTwilioConfigured()) {
-      return res.status(503).json({ error: 'Phone verification service not available' });
-    }
+    const email = buyer.rows[0].email;
 
     // Verify the code
-    const result = await checkPhoneVerification(phone, code);
+    const result = checkEmailOTP(email, code);
 
     if (result.success && result.valid) {
-      // Update buyer as phone verified
+      // Update buyer as email OTP verified
       await pool.query(
-        'UPDATE buyer_accounts SET phone_verified = true WHERE id = $1',
+        'UPDATE buyer_accounts SET email_otp_verified = true WHERE id = $1',
         [buyerId]
       );
-      console.log(`[PhoneVerification] Phone verified for buyer ${buyerId}`);
-      res.json({ success: true, message: 'Phone number verified successfully' });
+      console.log(`[EmailOTP] Email verified for buyer ${buyerId}`);
+      res.json({ success: true, verified: true, message: 'Email verified successfully' });
     } else {
       res.status(400).json({ error: result.error || 'Invalid verification code' });
     }
   } catch (err) {
-    console.error('Verify phone error:', err);
-    res.status(500).json({ error: 'Failed to verify phone number' });
+    console.error('Verify email OTP error:', err);
+    res.status(500).json({ error: 'Failed to verify email' });
   }
 });
 
-// Get buyer phone verification status
-app.get('/api/buyer/verify-phone/status', verifyBuyerToken, async (req, res) => {
+// Get buyer email OTP verification status
+app.get('/api/buyer/verify-email-otp/status', verifyBuyerToken, async (req, res) => {
   const buyerId = req.buyer.id;
 
   try {
     await ensureBuyerAccountsTable();
 
     const buyer = await pool.query(
-      'SELECT phone, phone_verified FROM buyer_accounts WHERE id = $1',
+      'SELECT email, email_otp_verified FROM buyer_accounts WHERE id = $1',
       [buyerId]
     );
 
@@ -1392,15 +1372,15 @@ app.get('/api/buyer/verify-phone/status', verifyBuyerToken, async (req, res) => 
       return res.status(404).json({ error: 'Buyer not found' });
     }
 
-    const { phone, phone_verified } = buyer.rows[0];
+    const { email, email_otp_verified } = buyer.rows[0];
     res.json({
-      phone: phone ? phone.replace(/(\+\d{1,3})\d{6}(\d{4})/, '$1******$2') : null,
-      phone_verified: phone_verified || false,
-      twilio_configured: isTwilioConfigured()
+      email: email,
+      email_otp_verified: email_otp_verified || false,
+      service_configured: isOTPConfigured()
     });
   } catch (err) {
-    console.error('Phone status error:', err);
-    res.status(500).json({ error: 'Failed to get phone status' });
+    console.error('Email OTP status error:', err);
+    res.status(500).json({ error: 'Failed to get email verification status' });
   }
 });
 
@@ -3108,7 +3088,7 @@ app.post('/api/buyer/auth/google', async (req, res) => {
         name: buyer.name,
         email: buyer.email,
         avatar_url: buyer.avatar_url,
-        phone_verified: buyer.phone_verified || false,
+        email_otp_verified: buyer.email_otp_verified || false,
       },
     });
   } catch (err) {
@@ -3626,7 +3606,7 @@ app.get('/api/reviews/seller/:seller_id', async (req, res) => {
         sr.created_at,
         sr.location_verified,
         ba.name as buyer_name,
-        ba.phone_verified,
+        ba.email_otp_verified,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id
@@ -3683,7 +3663,7 @@ app.get('/api/reviews/ad/:ad_id', async (req, res) => {
         sr.created_at,
         sr.location_verified,
         ba.name as buyer_name,
-        ba.phone_verified,
+        ba.email_otp_verified,
         a.headline as ad_headline
       FROM seller_reviews sr
       LEFT JOIN buyer_accounts ba ON sr.buyer_account_id = ba.id

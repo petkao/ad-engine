@@ -23,7 +23,7 @@ COPY geoService.js ./
 COPY transcriptionService.js ./
 COPY rerankerService.js ./
 COPY fraudDetectionService.js ./
-COPY twilioService.js ./
+COPY otpService.js ./
 
 # Expose port
 EXPOSE 8080

@@ -248,53 +248,30 @@ function ReviewModal({ ad, onClose, onSubmit }) {
   );
 }
 
-// ── Phone Verification Modal ──────────────────────────────────
-function PhoneVerificationModal({ onClose, onVerified }) {
-  const [phone, setPhone] = useState('');
+// ── Email Verification Modal ──────────────────────────────────
+function EmailVerificationModal({ email, onClose, onVerified }) {
   const [code, setCode] = useState('');
-  const [step, setStep] = useState('phone'); // 'phone' or 'code'
+  const [step, setStep] = useState('send'); // 'send' or 'code'
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const formatPhoneDisplay = (value) => {
-    // Remove non-digits except +
-    let cleaned = value.replace(/[^\d+]/g, '');
-    // Ensure starts with +
-    if (!cleaned.startsWith('+') && cleaned.length > 0) {
-      cleaned = '+' + cleaned;
-    }
-    return cleaned;
-  };
-
   const handleSendCode = async () => {
-    if (!phone || phone.length < 10) {
-      setError('Please enter a valid phone number');
-      return;
-    }
     setLoading(true);
     setError('');
     try {
       const token = localStorage.getItem('buyer_token');
-      const res = await fetch(`${BASE}/api/buyer/verify-phone/send`, {
+      const res = await fetch(`${BASE}/api/buyer/verify-email-otp/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ phone }),
       });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.success) {
         setStep('code');
       } else {
-        // Check for VoIP/Google Voice error
-        if (data.error?.toLowerCase().includes('voip') ||
-            data.error?.toLowerCase().includes('landline') ||
-            data.error?.toLowerCase().includes('cannot send')) {
-          setError('VoIP numbers (Google Voice, WhatsApp, etc.) are not accepted. Please use a real mobile or landline number.');
-        } else {
-          setError(data.error || 'Failed to send code');
-        }
+        setError(data.error || 'Failed to send code');
       }
     } catch (err) {
       setError('Network error. Please try again.');
@@ -312,7 +289,7 @@ function PhoneVerificationModal({ onClose, onVerified }) {
     setError('');
     try {
       const token = localStorage.getItem('buyer_token');
-      const res = await fetch(`${BASE}/api/buyer/verify-phone/confirm`, {
+      const res = await fetch(`${BASE}/api/buyer/verify-email-otp/confirm`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -339,38 +316,29 @@ function PhoneVerificationModal({ onClose, onVerified }) {
       onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{ background: 'white', borderRadius: '20px', width: '100%', maxWidth: '400px', padding: '24px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', margin: 0 }}>Verify Your Phone Number</h3>
+          <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#1e293b', margin: 0 }}>Verify Your Email</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94a3b8' }}>✕</button>
         </div>
 
         <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '20px', lineHeight: 1.5 }}>
-          Google Voice, WhatsApp and VoIP numbers not accepted. Use a real mobile or landline.
+          We'll send a 6-digit verification code to your email address.
         </p>
 
-        {step === 'phone' ? (
-          <>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ fontSize: '13px', color: '#64748b', display: 'block', marginBottom: '6px' }}>Phone Number</label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={e => setPhone(formatPhoneDisplay(e.target.value))}
-                placeholder="+1 (555) 123-4567"
-                style={{
-                  width: '100%', padding: '12px', border: '1px solid #e2e8f0',
-                  borderRadius: '12px', fontSize: '16px', outline: 'none',
-                }}
-              />
-              <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
-                International format: +1XXXXXXXXXX
-              </div>
+        {step === 'send' ? (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '6px' }}>Email Address</div>
+            <div style={{
+              padding: '12px', border: '1px solid #e2e8f0', borderRadius: '12px',
+              fontSize: '14px', color: '#1e293b', background: '#f8fafc'
+            }}>
+              {email}
             </div>
-          </>
+          </div>
         ) : (
           <>
             <div style={{ marginBottom: '16px' }}>
               <div style={{ fontSize: '13px', color: '#16a34a', background: '#dcfce7', padding: '10px 12px', borderRadius: '8px', marginBottom: '16px' }}>
-                Code sent to {phone}
+                ✉️ Code sent to {email}
               </div>
               <label style={{ fontSize: '13px', color: '#64748b', display: 'block', marginBottom: '6px' }}>Verification Code</label>
               <input
@@ -387,10 +355,10 @@ function PhoneVerificationModal({ onClose, onVerified }) {
               />
             </div>
             <button
-              onClick={() => { setStep('phone'); setCode(''); setError(''); }}
+              onClick={() => { setStep('send'); setCode(''); setError(''); }}
               style={{ fontSize: '13px', color: '#64748b', background: 'none', border: 'none', cursor: 'pointer', marginBottom: '12px' }}
             >
-              ← Use different number
+              ← Resend code
             </button>
           </>
         )}
@@ -402,8 +370,8 @@ function PhoneVerificationModal({ onClose, onVerified }) {
         )}
 
         <button
-          onClick={step === 'phone' ? handleSendCode : handleVerifyCode}
-          disabled={loading || (step === 'phone' ? phone.length < 10 : code.length !== 6)}
+          onClick={step === 'send' ? handleSendCode : handleVerifyCode}
+          disabled={loading || (step === 'code' && code.length !== 6)}
           style={{
             width: '100%', padding: '14px', border: 'none',
             background: loading ? '#94a3b8' : '#16a34a',
@@ -411,7 +379,7 @@ function PhoneVerificationModal({ onClose, onVerified }) {
             cursor: loading ? 'not-allowed' : 'pointer', color: 'white',
           }}
         >
-          {loading ? 'Please wait...' : step === 'phone' ? 'Send Code' : 'Verify'}
+          {loading ? 'Please wait...' : step === 'send' ? 'Send Code' : 'Verify'}
         </button>
       </div>
     </div>
@@ -539,9 +507,9 @@ function AdModal({ ad, onClose, buyer, onReviewClick }) {
                       {review.verified_match && (
                         <span style={{ marginLeft: '8px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✓ Verified Purchase</span>
                       )}
-                      {/* Phone verified vs Google only badge */}
-                      {review.phone_verified ? (
-                        <span style={{ marginLeft: '4px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✅ Phone Verified</span>
+                      {/* Email verified vs Google only badge */}
+                      {review.email_otp_verified ? (
+                        <span style={{ marginLeft: '4px', fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '2px 6px', borderRadius: '99px' }}>✅ Email Verified</span>
                       ) : (
                         <span style={{ marginLeft: '4px', fontSize: '11px', color: '#2563eb', background: '#dbeafe', padding: '2px 6px', borderRadius: '99px' }}>👤 Google Verified</span>
                       )}
@@ -586,13 +554,13 @@ export default function BuyerLanding() {
     }
   });
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showPhoneModal, setShowPhoneModal] = useState(false);
-  const [phoneVerified, setPhoneVerified] = useState(() => {
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailOtpVerified, setEmailOtpVerified] = useState(() => {
     try {
       const saved = localStorage.getItem('buyer_data');
       if (saved) {
         const data = JSON.parse(saved);
-        return data.phone_verified || false;
+        return data.email_otp_verified || false;
       }
       return false;
     } catch {
@@ -600,23 +568,23 @@ export default function BuyerLanding() {
     }
   });
 
-  // Fetch phone verification status when buyer is logged in
+  // Fetch email verification status when buyer is logged in
   useEffect(() => {
     if (buyer) {
       const token = localStorage.getItem('buyer_token');
       if (token) {
-        fetch(`${BASE}/api/buyer/verify-phone/status`, {
+        fetch(`${BASE}/api/buyer/verify-email-otp/status`, {
           headers: { 'Authorization': `Bearer ${token}` },
         })
           .then(r => r.json())
           .then(data => {
-            if (data.phone_verified !== undefined) {
-              setPhoneVerified(data.phone_verified);
+            if (data.email_otp_verified !== undefined) {
+              setEmailOtpVerified(data.email_otp_verified);
               // Update local storage
               const saved = localStorage.getItem('buyer_data');
               if (saved) {
                 const buyerData = JSON.parse(saved);
-                buyerData.phone_verified = data.phone_verified;
+                buyerData.email_otp_verified = data.email_otp_verified;
                 localStorage.setItem('buyer_data', JSON.stringify(buyerData));
               }
             }
@@ -626,13 +594,13 @@ export default function BuyerLanding() {
     }
   }, [buyer]);
 
-  const handlePhoneVerified = () => {
-    setPhoneVerified(true);
+  const handleEmailVerified = () => {
+    setEmailOtpVerified(true);
     // Update local storage
     const saved = localStorage.getItem('buyer_data');
     if (saved) {
       const buyerData = JSON.parse(saved);
-      buyerData.phone_verified = true;
+      buyerData.email_otp_verified = true;
       localStorage.setItem('buyer_data', JSON.stringify(buyerData));
     }
   };
@@ -649,7 +617,7 @@ export default function BuyerLanding() {
         localStorage.setItem('buyer_token', data.token);
         localStorage.setItem('buyer_data', JSON.stringify(data.buyer));
         setBuyer(data.buyer);
-        setPhoneVerified(data.buyer.phone_verified || false);
+        setEmailOtpVerified(data.buyer.email_otp_verified || false);
       } else {
         console.error('Google Sign-In failed:', data.error);
       }
@@ -839,15 +807,15 @@ export default function BuyerLanding() {
                   <div style={{ padding: '12px', borderBottom: '1px solid #f1f5f9' }}>
                     <div style={{ fontSize: '13px', fontWeight: '600', color: '#1e293b' }}>{buyer.name}</div>
                     <div style={{ fontSize: '11px', color: '#94a3b8' }}>{buyer.email}</div>
-                    {/* Phone verification status */}
+                    {/* Email verification status */}
                     <div style={{ marginTop: '8px' }}>
-                      {phoneVerified ? (
+                      {emailOtpVerified ? (
                         <span style={{ fontSize: '11px', color: '#16a34a', background: '#dcfce7', padding: '3px 8px', borderRadius: '99px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                          ✅ Phone Verified
+                          ✅ Email Verified
                         </span>
                       ) : (
                         <button
-                          onClick={() => { setShowUserMenu(false); setShowPhoneModal(true); }}
+                          onClick={() => { setShowUserMenu(false); setShowEmailModal(true); }}
                           style={{
                             fontSize: '11px', color: '#64748b', background: '#f1f5f9',
                             padding: '3px 8px', borderRadius: '99px', border: 'none',
@@ -856,7 +824,7 @@ export default function BuyerLanding() {
                           onMouseEnter={e => { e.currentTarget.style.background = '#e2e8f0'; }}
                           onMouseLeave={e => { e.currentTarget.style.background = '#f1f5f9'; }}
                         >
-                          🔒 Verify Phone
+                          🔒 Verify Email
                         </button>
                       )}
                     </div>
@@ -1066,11 +1034,12 @@ export default function BuyerLanding() {
         />
       )}
 
-      {/* Phone verification modal */}
-      {showPhoneModal && (
-        <PhoneVerificationModal
-          onClose={() => setShowPhoneModal(false)}
-          onVerified={handlePhoneVerified}
+      {/* Email verification modal */}
+      {showEmailModal && (
+        <EmailVerificationModal
+          email={buyer?.email}
+          onClose={() => setShowEmailModal(false)}
+          onVerified={handleEmailVerified}
         />
       )}
 

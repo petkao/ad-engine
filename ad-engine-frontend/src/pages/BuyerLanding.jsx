@@ -387,7 +387,7 @@ function EmailVerificationModal({ email, onClose, onVerified }) {
 }
 
 // ── Ad Detail Modal ───────────────────────────────────────────
-function AdModal({ ad, onClose, buyer, onReviewClick }) {
+function AdModal({ ad, onClose, buyer, emailOtpVerified, onReviewClick }) {
   const [reviews, setReviews] = useState([]);
   const [avgRating, setAvgRating] = useState(0);
   const [reviewsLoading, setReviewsLoading] = useState(true);
@@ -473,7 +473,24 @@ function AdModal({ ad, onClose, buyer, onReviewClick }) {
           <button style={{ width: '100%', background: '#2563eb', color: 'white', border: 'none', borderRadius: '16px', padding: '14px', fontWeight: '700', fontSize: '16px', cursor: 'pointer' }}>
             Shop Now — ${parseFloat(ad.price || 0).toFixed(2)}
           </button>
-          {buyer && (
+          {/* Review button - requires sign in AND email verification */}
+          {!buyer ? (
+            <div style={{
+              width: '100%', background: '#f1f5f9', color: '#64748b',
+              border: 'none', borderRadius: '16px', padding: '14px', fontWeight: '600', fontSize: '14px',
+              marginTop: '12px', textAlign: 'center',
+            }}>
+              Sign in to leave a review
+            </div>
+          ) : !emailOtpVerified ? (
+            <div style={{
+              width: '100%', background: '#fef3c7', color: '#92400e',
+              border: 'none', borderRadius: '16px', padding: '14px', fontWeight: '600', fontSize: '14px',
+              marginTop: '12px', textAlign: 'center',
+            }}>
+              🔒 Verify email to leave a review
+            </div>
+          ) : (
             <button
               onClick={() => onReviewClick(ad)}
               style={{
@@ -1015,6 +1032,7 @@ export default function BuyerLanding() {
           ad={selected}
           onClose={() => setSelected(null)}
           buyer={buyer}
+          emailOtpVerified={emailOtpVerified}
           onReviewClick={(ad) => {
             setSelected(null);
             setReviewAd(ad);

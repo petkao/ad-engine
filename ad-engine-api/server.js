@@ -3513,6 +3513,15 @@ app.post('/api/buyer/reviews', verifyBuyerToken, async (req, res) => {
       return res.status(403).json({ error: 'Account suspended', reason: banCheck.reason });
     }
 
+    // Check if buyer email is verified
+    const buyerCheck = await pool.query(
+      'SELECT email_otp_verified FROM buyer_accounts WHERE id = $1',
+      [buyerAccountId]
+    );
+    if (buyerCheck.rows.length === 0 || !buyerCheck.rows[0].email_otp_verified) {
+      return res.status(403).json({ error: 'Please verify your email first' });
+    }
+
     // Bot detection
     const botCheck = detectBot(userAgent);
     if (botCheck.isBot) {

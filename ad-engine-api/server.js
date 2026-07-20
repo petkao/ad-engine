@@ -4675,7 +4675,39 @@ app.post('/api/creative-studio/briefs', requireAuth, checkSellerApproved, async 
 
   } catch (err) {
     console.error('Error creating brief:', err);
-    res.status(500).json({ error: 'Failed to create brief', message: err.message });
+
+    // Classify the error for better user feedback
+    const errorMessage = err.message || 'Unknown error';
+    let userError = 'Failed to generate creative brief';
+    let statusCode = 500;
+
+    if (errorMessage.includes('timed out')) {
+      userError = 'LLM request timed out. Please try again.';
+      statusCode = 504;
+    } else if (errorMessage.includes('API key') || errorMessage.includes('authentication') || errorMessage.includes('Unauthorized') || errorMessage.includes('401')) {
+      userError = 'LLM provider authentication failed. Please contact support.';
+      statusCode = 503;
+    } else if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
+      userError = 'LLM provider rate limit exceeded. Please wait and try again.';
+      statusCode = 429;
+    } else if (errorMessage.includes('model') && (errorMessage.includes('not found') || errorMessage.includes('does not exist'))) {
+      userError = 'Configured LLM model is unavailable. Please contact support.';
+      statusCode = 503;
+    } else if (errorMessage.includes('SDK not installed') || errorMessage.includes('MODULE_NOT_FOUND')) {
+      userError = 'LLM provider not configured. Please contact support.';
+      statusCode = 503;
+    } else if (errorMessage.includes('Missing API key') || errorMessage.includes('not configured')) {
+      userError = 'LLM provider not configured. Please contact support.';
+      statusCode = 503;
+    } else if (errorMessage.includes('parse') || errorMessage.includes('JSON')) {
+      userError = 'Invalid response from LLM provider. Please try again.';
+      statusCode = 502;
+    } else if (errorMessage.includes('Empty response')) {
+      userError = 'Empty response from LLM provider. Please try again.';
+      statusCode = 502;
+    }
+
+    res.status(statusCode).json({ error: userError, details: errorMessage });
   }
 });
 
@@ -4688,17 +4720,33 @@ app.put('/api/creative-studio/briefs/:id/select-campaign', requireAuth, checkSel
     }
 
     const { campaign_index } = validation.data;
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
 
+    // First, fetch the brief to check ownership
+    const { rows: briefs } = await pool.query(
+      'SELECT * FROM creative_briefs WHERE id = $1',
+      [req.params.id]
+    );
+
+    if (briefs.length === 0) {
+      return res.status(404).json({ error: 'Brief does not exist' });
+    }
+
+    const brief = briefs[0];
+
+    // Check ownership: admins can access any brief, sellers only their own
+    if (!isAdmin && brief.seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Brief belongs to another seller' });
+    }
+
+    // Update the brief
     const { rows } = await pool.query(`
       UPDATE creative_briefs
       SET selected_campaign_index = $1, updated_at = NOW()
-      WHERE id = $2 AND seller_id = $3
+      WHERE id = $2
       RETURNING *
-    `, [campaign_index, req.params.id, req.user.seller_id]);
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Brief not found' });
-    }
+    `, [campaign_index, req.params.id]);
 
     res.json(rows[0]);
   } catch (err) {
@@ -4718,20 +4766,27 @@ app.post('/api/creative-studio/briefs/:id/script', requireAuth, checkSellerAppro
     }
 
     const { platform, duration_seconds } = validation.data;
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
 
-    // Fetch brief with product details
+    // Fetch brief with product details (no seller filter - check ownership after)
     const { rows: briefs } = await pool.query(`
       SELECT cb.*, p.title as product_title
       FROM creative_briefs cb
       JOIN products p ON cb.product_id = p.id
-      WHERE cb.id = $1 AND cb.seller_id = $2
-    `, [req.params.id, req.user.seller_id]);
+      WHERE cb.id = $1
+    `, [req.params.id]);
 
     if (briefs.length === 0) {
-      return res.status(404).json({ error: 'Brief not found' });
+      return res.status(404).json({ error: 'Brief does not exist' });
     }
 
     const brief = briefs[0];
+
+    // Check ownership: admins can access any brief, sellers only their own
+    if (!isAdmin && brief.seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Brief belongs to another seller' });
+    }
 
     if (brief.selected_campaign_index === null) {
       return res.status(400).json({ error: 'Please select a campaign concept first' });
@@ -4765,13 +4820,21 @@ app.post('/api/creative-studio/briefs/:id/script', requireAuth, checkSellerAppro
 // Get scripts for a brief
 app.get('/api/creative-studio/briefs/:id/scripts', requireAuth, checkSellerApproved, async (req, res) => {
   try {
-    // Verify ownership
-    const { rows: briefs } = await pool.query(`
-      SELECT id FROM creative_briefs WHERE id = $1 AND seller_id = $2
-    `, [req.params.id, req.user.seller_id]);
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
+
+    // Fetch brief to verify ownership
+    const { rows: briefs } = await pool.query(
+      'SELECT id, seller_id FROM creative_briefs WHERE id = $1',
+      [req.params.id]
+    );
 
     if (briefs.length === 0) {
-      return res.status(404).json({ error: 'Brief not found' });
+      return res.status(404).json({ error: 'Brief does not exist' });
+    }
+
+    if (!isAdmin && briefs[0].seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Brief belongs to another seller' });
     }
 
     const { rows } = await pool.query(`
@@ -4798,20 +4861,27 @@ app.post('/api/creative-studio/scripts/:id/storyboard', requireAuth, checkSeller
     }
 
     const { aspect_ratio } = validation.data;
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
 
-    // Fetch script and verify ownership
+    // Fetch script with brief details (no seller filter - check ownership after)
     const { rows: scripts } = await pool.query(`
       SELECT cs.*, cb.seller_id, cb.product_analysis
       FROM creative_scripts cs
       JOIN creative_briefs cb ON cs.brief_id = cb.id
-      WHERE cs.id = $1 AND cb.seller_id = $2
-    `, [req.params.id, req.user.seller_id]);
+      WHERE cs.id = $1
+    `, [req.params.id]);
 
     if (scripts.length === 0) {
-      return res.status(404).json({ error: 'Script not found' });
+      return res.status(404).json({ error: 'Script does not exist' });
     }
 
     const script = scripts[0];
+
+    // Check ownership: admins can access any script, sellers only their own
+    if (!isAdmin && script.seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Script belongs to another seller' });
+    }
 
     // Generate storyboard
     console.log(`[Creative Studio] Generating ${aspect_ratio} storyboard for script: ${script.id}`);
@@ -4844,15 +4914,22 @@ app.post('/api/creative-studio/scripts/:id/storyboard', requireAuth, checkSeller
 // Get storyboards for a script
 app.get('/api/creative-studio/scripts/:id/storyboards', requireAuth, checkSellerApproved, async (req, res) => {
   try {
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
+
     // Verify ownership via script -> brief -> seller chain
     const { rows: scripts } = await pool.query(`
-      SELECT cs.id FROM creative_scripts cs
+      SELECT cs.id, cb.seller_id FROM creative_scripts cs
       JOIN creative_briefs cb ON cs.brief_id = cb.id
-      WHERE cs.id = $1 AND cb.seller_id = $2
-    `, [req.params.id, req.user.seller_id]);
+      WHERE cs.id = $1
+    `, [req.params.id]);
 
     if (scripts.length === 0) {
-      return res.status(404).json({ error: 'Script not found' });
+      return res.status(404).json({ error: 'Script does not exist' });
+    }
+
+    if (!isAdmin && scripts[0].seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Script belongs to another seller' });
     }
 
     const { rows } = await pool.query(`
@@ -4872,6 +4949,8 @@ app.get('/api/creative-studio/scripts/:id/storyboards', requireAuth, checkSeller
 app.put('/api/creative-studio/storyboards/:id/status', requireAuth, checkSellerApproved, async (req, res) => {
   try {
     const { status } = req.body;
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
 
     if (!['draft', 'approved', 'rejected'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status. Must be draft, approved, or rejected' });
@@ -4879,14 +4958,18 @@ app.put('/api/creative-studio/storyboards/:id/status', requireAuth, checkSellerA
 
     // Verify ownership via storyboard -> script -> brief -> seller chain
     const { rows: storyboards } = await pool.query(`
-      SELECT cs2.id FROM creative_storyboards cs2
+      SELECT cs2.id, cb.seller_id FROM creative_storyboards cs2
       JOIN creative_scripts cs ON cs2.script_id = cs.id
       JOIN creative_briefs cb ON cs.brief_id = cb.id
-      WHERE cs2.id = $1 AND cb.seller_id = $2
-    `, [req.params.id, req.user.seller_id]);
+      WHERE cs2.id = $1
+    `, [req.params.id]);
 
     if (storyboards.length === 0) {
-      return res.status(404).json({ error: 'Storyboard not found' });
+      return res.status(404).json({ error: 'Storyboard does not exist' });
+    }
+
+    if (!isAdmin && storyboards[0].seller_id !== userSellerId) {
+      return res.status(403).json({ error: 'Storyboard belongs to another seller' });
     }
 
     const { rows } = await pool.query(`
@@ -4924,12 +5007,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`Ad Engine API running on http://localhost:${PORT}`);
 
-    // Warm up BGE reranker in background (avoid cold start latency)
-    setTimeout(() => {
-      warmUpReranker().catch(err => {
-        console.error('[Startup] Reranker warm-up failed:', err.message);
-      });
-    }, 5000);
+    // BGE reranker warm-up disabled to reduce memory footprint (~1.5GB).
+    // The reranker will lazy-load on first buyer search request that needs it.
+    // See rerankerService.js for singleton initialization guard.
   });
 }
 

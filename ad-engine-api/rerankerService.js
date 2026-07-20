@@ -17,10 +17,13 @@ let modelReady = false;
 async function loadReranker() {
   if (reranker) return reranker;
 
-  if (loadingPromise) return loadingPromise;
+  if (loadingPromise) {
+    console.log('[Reranker] Model already loading, waiting for existing load...');
+    return loadingPromise;
+  }
 
   loadingPromise = (async () => {
-    console.log('[Reranker] Loading BGE reranker model...');
+    console.log('[Reranker] Lazy-loading BGE reranker model (first request)...');
     const startTime = Date.now();
 
     reranker = await pipeline(
@@ -30,7 +33,7 @@ async function loadReranker() {
     );
 
     modelReady = true;
-    console.log(`[Reranker] Model loaded in ${Date.now() - startTime}ms`);
+    console.log(`[Reranker] Lazy-load complete in ${Date.now() - startTime}ms`);
     return reranker;
   })();
 

@@ -302,7 +302,15 @@ export default function CreativeStudio() {
   };
 
   const handleProductSelect = async (product) => {
-    log('handleProductSelect start', { productId: product.id, productTitle: product.title });
+    // Log complete product object for debugging
+    log('handleProductSelect start', {
+      productId: product.id,
+      productTitle: product.title,
+      productSellerId: product.seller_id,
+      productCategory: product.category,
+      fullProduct: JSON.stringify(product),
+    });
+    console.log('[CreativeStudio] Full product object:', product);
 
     setSelectedProduct(product);
     setModalOpen(true);
@@ -312,7 +320,10 @@ export default function CreativeStudio() {
     setError('');
 
     try {
-      log('API request start: createCreativeBrief', { productId: product.id });
+      log('API request start: createCreativeBrief', {
+        productId: product.id,
+        requestBody: JSON.stringify({ product_id: product.id }),
+      });
       const newBrief = await api.createCreativeBrief(product.id);
       log('API request success: createCreativeBrief', { briefId: newBrief.id });
       setBrief(newBrief);

@@ -4606,25 +4606,43 @@ app.post('/api/creative-studio/briefs', requireAuth, checkSellerApproved, async 
     // Validate input
     const validation = safeParse(CreateBriefInputSchema, req.body);
     if (!validation.success) {
-      return res.status(400).json({ error: 'Invalid input', details: validation.error });
+      return res.status(400).json({ error: 'Invalid input: product_id is required and must be a valid UUID', details: validation.error });
     }
 
     const { product_id } = validation.data;
+    const isAdmin = req.user?.role === 'admin';
+    const userSellerId = req.user?.seller_id;
 
-    // Fetch product and seller details
-    const { rows: products } = await pool.query(`
+    console.log(`[Creative Studio] Brief request: product_id=${product_id}, user_role=${req.user?.role}, user_seller_id=${userSellerId}`);
+
+    // First, check if product exists at all
+    const { rows: allProducts } = await pool.query(`
       SELECT p.*, s.name as seller_name, s.industry as seller_industry,
              s.location as seller_location
       FROM products p
       JOIN sellers s ON p.seller_id = s.id
-      WHERE p.id = $1 AND p.seller_id = $2
-    `, [product_id, req.user.seller_id]);
+      WHERE p.id = $1
+    `, [product_id]);
 
-    if (products.length === 0) {
-      return res.status(404).json({ error: 'Product not found' });
+    if (allProducts.length === 0) {
+      console.log(`[Creative Studio] Product not found: ${product_id}`);
+      return res.status(404).json({ error: 'Product does not exist' });
     }
 
-    const product = products[0];
+    const product = allProducts[0];
+
+    // Check ownership: admins can access any product, sellers only their own
+    if (!isAdmin) {
+      if (!userSellerId) {
+        console.log(`[Creative Studio] User has no seller_id: ${req.user?.email}`);
+        return res.status(403).json({ error: 'No seller account linked to this user' });
+      }
+      if (product.seller_id !== userSellerId) {
+        console.log(`[Creative Studio] Ownership mismatch: product.seller_id=${product.seller_id}, user.seller_id=${userSellerId}`);
+        return res.status(403).json({ error: 'Product belongs to another seller' });
+      }
+    }
+
     const seller = {
       name: product.seller_name,
       industry: product.seller_industry,
@@ -4639,12 +4657,15 @@ app.post('/api/creative-studio/briefs', requireAuth, checkSellerApproved, async 
     console.log(`[Creative Studio] Generating campaigns for: ${product.title}`);
     const campaignConcepts = await generateCampaigns(productAnalysis);
 
-    // Store brief in database
+    // Store brief in database - use product's seller_id for data integrity
+    const briefSellerId = product.seller_id;
     const { rows: briefs } = await pool.query(`
       INSERT INTO creative_briefs (seller_id, product_id, product_analysis, campaign_concepts, status)
       VALUES ($1, $2, $3, $4, 'draft')
       RETURNING *
-    `, [req.user.seller_id, product_id, JSON.stringify(productAnalysis), JSON.stringify(campaignConcepts)]);
+    `, [briefSellerId, product_id, JSON.stringify(productAnalysis), JSON.stringify(campaignConcepts)]);
+
+    console.log(`[Creative Studio] Brief created: id=${briefs[0].id}`);
 
     res.status(201).json({
       ...briefs[0],

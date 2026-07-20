@@ -24,6 +24,9 @@ COPY transcriptionService.js ./
 COPY rerankerService.js ./
 COPY fraudDetectionService.js ./
 COPY otpService.js ./
+COPY creativeStudioService.js ./
+COPY creativeStudioSchemas.js ./
+COPY llmProvider.js ./
 
 # Expose port
 EXPOSE 8080

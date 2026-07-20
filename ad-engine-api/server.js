@@ -23,6 +23,26 @@ const {
   checkVerificationCode: checkEmailOTP,
   isConfigured: isOTPConfigured
 } = require('./otpService');
+const {
+  analyzeProduct,
+  generateCampaigns,
+  generateScript,
+  generateStoryboard,
+  evaluateArtifact,
+  generateRenderSpec,
+  aggregateAssetRequirements,
+} = require('./creativeStudioService');
+const {
+  ProductAnalysisSchema,
+  CampaignConceptsSchema,
+  ScriptContentSchema,
+  StoryboardContentSchema,
+  CreateBriefInputSchema,
+  SelectCampaignInputSchema,
+  GenerateScriptInputSchema,
+  GenerateStoryboardInputSchema,
+  safeParse,
+} = require('./creativeStudioSchemas');
 const OpenAI = require('openai');
 const { Storage } = require('@google-cloud/storage');
 const express = require('express');
@@ -466,6 +486,70 @@ async function ensureAdEmbeddingsTranscriptColumns() {
     })();
   }
   return adEmbeddingsTranscriptReady;
+}
+
+// ── CREATIVE STUDIO TABLES ────────────────────────────────────
+let creativeStudioTablesReady;
+
+function ensureCreativeStudioTables() {
+  if (!creativeStudioTablesReady) {
+    creativeStudioTablesReady = pool.query(`
+      -- Creative briefs: stores product analysis and campaign concepts
+      CREATE TABLE IF NOT EXISTS creative_briefs (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        seller_id UUID NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+        product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        product_analysis JSONB NOT NULL,
+        campaign_concepts JSONB NOT NULL,
+        selected_campaign_index INTEGER,
+        status VARCHAR(30) NOT NULL DEFAULT 'draft',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_creative_briefs_seller
+        ON creative_briefs (seller_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_creative_briefs_product
+        ON creative_briefs (product_id);
+
+      -- Creative scripts: generated video scripts
+      CREATE TABLE IF NOT EXISTS creative_scripts (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        brief_id UUID NOT NULL REFERENCES creative_briefs(id) ON DELETE CASCADE,
+        platform VARCHAR(30) NOT NULL,
+        duration_seconds INTEGER NOT NULL,
+        script_content JSONB NOT NULL,
+        evaluation_scores JSONB,
+        status VARCHAR(20) NOT NULL DEFAULT 'draft',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_creative_scripts_brief
+        ON creative_scripts (brief_id, created_at DESC);
+
+      -- Creative storyboards: scene-by-scene visual breakdown
+      CREATE TABLE IF NOT EXISTS creative_storyboards (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        script_id UUID NOT NULL REFERENCES creative_scripts(id) ON DELETE CASCADE,
+        storyboard_content JSONB NOT NULL,
+        asset_requirements JSONB,
+        render_spec JSONB,
+        render_status VARCHAR(20),
+        render_url TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'draft',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_creative_storyboards_script
+        ON creative_storyboards (script_id);
+    `).catch((err) => {
+      creativeStudioTablesReady = undefined;
+      console.error('Failed to create creative studio tables:', err.message);
+    });
+  }
+  return creativeStudioTablesReady;
 }
 
 // ── STRIPE PRODUCTS INITIALIZATION ────────────────────────────
@@ -4474,6 +4558,330 @@ app.post('/api/admin/retranscribe-ads', requireAuth, async (req, res) => {
   }
 });
 
+// ── CREATIVE STUDIO API ROUTES ────────────────────────────────
+
+// List all briefs for the current seller
+app.get('/api/creative-studio/briefs', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT cb.*, p.title as product_title, p.image_url as product_image
+      FROM creative_briefs cb
+      JOIN products p ON cb.product_id = p.id
+      WHERE cb.seller_id = $1
+      ORDER BY cb.created_at DESC
+    `, [req.user.seller_id]);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching briefs:', err);
+    res.status(500).json({ error: 'Failed to fetch creative briefs' });
+  }
+});
+
+// Get a single brief by ID
+app.get('/api/creative-studio/briefs/:id', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT cb.*, p.title as product_title, p.image_url as product_image,
+             p.description as product_description, p.category, p.price
+      FROM creative_briefs cb
+      JOIN products p ON cb.product_id = p.id
+      WHERE cb.id = $1 AND cb.seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Brief not found' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error fetching brief:', err);
+    res.status(500).json({ error: 'Failed to fetch brief' });
+  }
+});
+
+// Create a new brief (analyzes product and generates 3 campaign concepts)
+app.post('/api/creative-studio/briefs', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    await ensureCreativeStudioTables();
+
+    // Validate input
+    const validation = safeParse(CreateBriefInputSchema, req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Invalid input', details: validation.error });
+    }
+
+    const { product_id } = validation.data;
+
+    // Fetch product and seller details
+    const { rows: products } = await pool.query(`
+      SELECT p.*, s.name as seller_name, s.industry as seller_industry,
+             s.location as seller_location
+      FROM products p
+      JOIN sellers s ON p.seller_id = s.id
+      WHERE p.id = $1 AND p.seller_id = $2
+    `, [product_id, req.user.seller_id]);
+
+    if (products.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const product = products[0];
+    const seller = {
+      name: product.seller_name,
+      industry: product.seller_industry,
+      location: product.seller_location,
+    };
+
+    // Generate product analysis
+    console.log(`[Creative Studio] Analyzing product: ${product.title}`);
+    const productAnalysis = await analyzeProduct(product, seller);
+
+    // Generate 3 campaign concepts
+    console.log(`[Creative Studio] Generating campaigns for: ${product.title}`);
+    const campaignConcepts = await generateCampaigns(productAnalysis);
+
+    // Store brief in database
+    const { rows: briefs } = await pool.query(`
+      INSERT INTO creative_briefs (seller_id, product_id, product_analysis, campaign_concepts, status)
+      VALUES ($1, $2, $3, $4, 'draft')
+      RETURNING *
+    `, [req.user.seller_id, product_id, JSON.stringify(productAnalysis), JSON.stringify(campaignConcepts)]);
+
+    res.status(201).json({
+      ...briefs[0],
+      product_title: product.title,
+      product_image: product.image_url,
+    });
+
+  } catch (err) {
+    console.error('Error creating brief:', err);
+    res.status(500).json({ error: 'Failed to create brief', message: err.message });
+  }
+});
+
+// Select a campaign concept for a brief
+app.put('/api/creative-studio/briefs/:id/select-campaign', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const validation = safeParse(SelectCampaignInputSchema, req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Invalid input', details: validation.error });
+    }
+
+    const { campaign_index } = validation.data;
+
+    const { rows } = await pool.query(`
+      UPDATE creative_briefs
+      SET selected_campaign_index = $1, updated_at = NOW()
+      WHERE id = $2 AND seller_id = $3
+      RETURNING *
+    `, [campaign_index, req.params.id, req.user.seller_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Brief not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error selecting campaign:', err);
+    res.status(500).json({ error: 'Failed to select campaign' });
+  }
+});
+
+// Generate a script for a brief
+app.post('/api/creative-studio/briefs/:id/script', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    await ensureCreativeStudioTables();
+
+    const validation = safeParse(GenerateScriptInputSchema, req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Invalid input', details: validation.error });
+    }
+
+    const { platform, duration_seconds } = validation.data;
+
+    // Fetch brief with product details
+    const { rows: briefs } = await pool.query(`
+      SELECT cb.*, p.title as product_title
+      FROM creative_briefs cb
+      JOIN products p ON cb.product_id = p.id
+      WHERE cb.id = $1 AND cb.seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (briefs.length === 0) {
+      return res.status(404).json({ error: 'Brief not found' });
+    }
+
+    const brief = briefs[0];
+
+    if (brief.selected_campaign_index === null) {
+      return res.status(400).json({ error: 'Please select a campaign concept first' });
+    }
+
+    const productAnalysis = brief.product_analysis;
+    const selectedCampaign = brief.campaign_concepts[brief.selected_campaign_index];
+
+    // Generate script
+    console.log(`[Creative Studio] Generating ${duration_seconds}s ${platform} script for: ${brief.product_title}`);
+    const scriptContent = await generateScript(productAnalysis, selectedCampaign, platform, duration_seconds);
+
+    // Evaluate script quality
+    const evaluationScores = await evaluateArtifact('script', scriptContent, productAnalysis);
+
+    // Store script in database
+    const { rows: scripts } = await pool.query(`
+      INSERT INTO creative_scripts (brief_id, platform, duration_seconds, script_content, evaluation_scores, status)
+      VALUES ($1, $2, $3, $4, $5, 'draft')
+      RETURNING *
+    `, [brief.id, platform, duration_seconds, JSON.stringify(scriptContent), JSON.stringify(evaluationScores)]);
+
+    res.status(201).json(scripts[0]);
+
+  } catch (err) {
+    console.error('Error generating script:', err);
+    res.status(500).json({ error: 'Failed to generate script', message: err.message });
+  }
+});
+
+// Get scripts for a brief
+app.get('/api/creative-studio/briefs/:id/scripts', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    // Verify ownership
+    const { rows: briefs } = await pool.query(`
+      SELECT id FROM creative_briefs WHERE id = $1 AND seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (briefs.length === 0) {
+      return res.status(404).json({ error: 'Brief not found' });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT * FROM creative_scripts
+      WHERE brief_id = $1
+      ORDER BY created_at DESC
+    `, [req.params.id]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching scripts:', err);
+    res.status(500).json({ error: 'Failed to fetch scripts' });
+  }
+});
+
+// Generate a storyboard for a script
+app.post('/api/creative-studio/scripts/:id/storyboard', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    await ensureCreativeStudioTables();
+
+    const validation = safeParse(GenerateStoryboardInputSchema, req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Invalid input', details: validation.error });
+    }
+
+    const { aspect_ratio } = validation.data;
+
+    // Fetch script and verify ownership
+    const { rows: scripts } = await pool.query(`
+      SELECT cs.*, cb.seller_id, cb.product_analysis
+      FROM creative_scripts cs
+      JOIN creative_briefs cb ON cs.brief_id = cb.id
+      WHERE cs.id = $1 AND cb.seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (scripts.length === 0) {
+      return res.status(404).json({ error: 'Script not found' });
+    }
+
+    const script = scripts[0];
+
+    // Generate storyboard
+    console.log(`[Creative Studio] Generating ${aspect_ratio} storyboard for script: ${script.id}`);
+    const storyboardContent = await generateStoryboard(script.script_content, aspect_ratio);
+
+    // Aggregate asset requirements
+    const assetRequirements = aggregateAssetRequirements(storyboardContent);
+
+    // Generate render specification
+    const renderSpec = generateRenderSpec(storyboardContent, {
+      format: 'mp4',
+      frameRate: 30,
+    });
+
+    // Store storyboard in database
+    const { rows: storyboards } = await pool.query(`
+      INSERT INTO creative_storyboards (script_id, storyboard_content, asset_requirements, render_spec, status)
+      VALUES ($1, $2, $3, $4, 'draft')
+      RETURNING *
+    `, [script.id, JSON.stringify(storyboardContent), JSON.stringify(assetRequirements), JSON.stringify(renderSpec)]);
+
+    res.status(201).json(storyboards[0]);
+
+  } catch (err) {
+    console.error('Error generating storyboard:', err);
+    res.status(500).json({ error: 'Failed to generate storyboard', message: err.message });
+  }
+});
+
+// Get storyboards for a script
+app.get('/api/creative-studio/scripts/:id/storyboards', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    // Verify ownership via script -> brief -> seller chain
+    const { rows: scripts } = await pool.query(`
+      SELECT cs.id FROM creative_scripts cs
+      JOIN creative_briefs cb ON cs.brief_id = cb.id
+      WHERE cs.id = $1 AND cb.seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (scripts.length === 0) {
+      return res.status(404).json({ error: 'Script not found' });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT * FROM creative_storyboards
+      WHERE script_id = $1
+      ORDER BY created_at DESC
+    `, [req.params.id]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching storyboards:', err);
+    res.status(500).json({ error: 'Failed to fetch storyboards' });
+  }
+});
+
+// Update storyboard status (approve/reject)
+app.put('/api/creative-studio/storyboards/:id/status', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { status } = req.body;
+
+    if (!['draft', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be draft, approved, or rejected' });
+    }
+
+    // Verify ownership via storyboard -> script -> brief -> seller chain
+    const { rows: storyboards } = await pool.query(`
+      SELECT cs2.id FROM creative_storyboards cs2
+      JOIN creative_scripts cs ON cs2.script_id = cs.id
+      JOIN creative_briefs cb ON cs.brief_id = cb.id
+      WHERE cs2.id = $1 AND cb.seller_id = $2
+    `, [req.params.id, req.user.seller_id]);
+
+    if (storyboards.length === 0) {
+      return res.status(404).json({ error: 'Storyboard not found' });
+    }
+
+    const { rows } = await pool.query(`
+      UPDATE creative_storyboards
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `, [status, req.params.id]);
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error updating storyboard status:', err);
+    res.status(500).json({ error: 'Failed to update storyboard status' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 
 // Initialize tables and Stripe products before starting server
@@ -4485,6 +4893,7 @@ async function startServer() {
     await ensureAdEmbeddingsTranscriptColumns();
     await ensureBuyerAccountsTable();
     await ensureSellerReviewsTable();
+    await ensureCreativeStudioTables();
     await ensureStripeProducts();
     console.log('Database tables and Stripe products initialized');
   } catch (err) {

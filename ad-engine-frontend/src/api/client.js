@@ -84,4 +84,33 @@ export const api = {
   // Buyer ban/unban endpoints
   banBuyer: (id, reason) => request(`/admin/buyers/${id}/ban`, { method: 'POST', body: JSON.stringify({ reason }) }),
   unbanBuyer: (id) => request(`/admin/buyers/${id}/unban`, { method: 'POST' }),
+
+  // Creative Studio endpoints
+  getCreativeBriefs: () => request('/creative-studio/briefs'),
+  getCreativeBrief: (id) => request(`/creative-studio/briefs/${id}`),
+  createCreativeBrief: (productId) => request('/creative-studio/briefs', {
+    method: 'POST',
+    body: JSON.stringify({ product_id: productId }),
+  }),
+  selectCampaign: (briefId, campaignIndex) => request(`/creative-studio/briefs/${briefId}/select-campaign`, {
+    method: 'PUT',
+    body: JSON.stringify({ campaign_index: campaignIndex }),
+  }),
+  generateScript: (briefId, options = {}) => request(`/creative-studio/briefs/${briefId}/script`, {
+    method: 'POST',
+    body: JSON.stringify({
+      platform: options.platform || 'generic',
+      duration_seconds: options.duration || 15,
+    }),
+  }),
+  getScripts: (briefId) => request(`/creative-studio/briefs/${briefId}/scripts`),
+  generateStoryboard: (scriptId, aspectRatio = '9:16') => request(`/creative-studio/scripts/${scriptId}/storyboard`, {
+    method: 'POST',
+    body: JSON.stringify({ aspect_ratio: aspectRatio }),
+  }),
+  getStoryboards: (scriptId) => request(`/creative-studio/scripts/${scriptId}/storyboards`),
+  updateStoryboardStatus: (storyboardId, status) => request(`/creative-studio/storyboards/${storyboardId}/status`, {
+    method: 'PUT',
+    body: JSON.stringify({ status }),
+  }),
 };

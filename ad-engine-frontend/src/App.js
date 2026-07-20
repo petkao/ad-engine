@@ -17,14 +17,16 @@ import PendingApproval from './pages/PendingApproval';
 import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
 import Billing from './pages/Billing';
 import FraudLogs from './pages/FraudLogs';
+import CreativeStudio from './pages/CreativeStudio';
 
 // Navigation items with role-based access
-// Sellers can ONLY see: Dashboard, Products, Ads, Analytics, Billing
-// Admins can see all pages
+// Sellers see: Dashboard, Products, Ads, Creative Studio, Analytics, Billing
+// Admins see all pages
 const ALL_NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⚡', roles: ['admin', 'seller'] },
   { id: 'products', label: 'Products', icon: '📦', roles: ['admin', 'seller'] },
   { id: 'ads', label: 'Ads', icon: '📢', roles: ['admin', 'seller'] },
+  { id: 'creative', label: 'Creative Studio', icon: '🎬', roles: ['admin', 'seller'] },
   { id: 'analytics', label: 'Analytics', icon: '📊', roles: ['admin', 'seller'] },
   { id: 'billing', label: 'Billing', icon: '💳', roles: ['seller'] },
   { id: 'pending', label: 'Pending Approval', icon: '⏳', roles: ['admin'], badge: true },
@@ -42,7 +44,7 @@ const PAGES = {
   dashboard: Dashboard, analytics: Analytics, billing: Billing,
   pending: PendingApproval, sellers: Sellers, products: Products,
   ads: Ads, buyers: Buyers, events: AdEventLog, geo: GeoVerification,
-  fraud: FraudLogs,
+  fraud: FraudLogs, creative: CreativeStudio,
 };
 
 function EmailVerificationBanner({ onResend }) {

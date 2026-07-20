@@ -13,7 +13,16 @@ async function request(path, options = {}) {
     },
     ...options,
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    let errorMessage = `API error: ${res.status}`;
+    try {
+      const data = await res.json();
+      errorMessage = data.error || data.message || errorMessage;
+    } catch {
+      // Response wasn't JSON, use status code
+    }
+    throw new Error(errorMessage);
+  }
   return res.json();
 }
 

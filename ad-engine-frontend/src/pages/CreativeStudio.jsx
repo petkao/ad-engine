@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import {
   PageHeader, Button, Badge, Spinner,
-  Modal, Field, Select
+  Field, Select
 } from '../components/UI';
 
 // Step indicators for the wizard
@@ -248,6 +248,11 @@ export default function CreativeStudio() {
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
 
+  // Modal state - separate from generating to keep modal open on error
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalError, setModalError] = useState('');
+  const [modalAction, setModalAction] = useState(''); // For retry functionality
+
   // Wizard state
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [brief, setBrief] = useState(null);
@@ -259,6 +264,18 @@ export default function CreativeStudio() {
   const [platform, setPlatform] = useState('tiktok');
   const [duration, setDuration] = useState(15);
   const [aspectRatio, setAspectRatio] = useState('9:16');
+
+  // Diagnostic logging
+  const log = (action, data = {}) => {
+    console.log(`[CreativeStudio] ${action}`, {
+      timestamp: new Date().toISOString(),
+      modalOpen,
+      generating,
+      step,
+      selectedProductId: selectedProduct?.id,
+      ...data,
+    });
+  };
 
   useEffect(() => {
     loadProducts();
@@ -276,58 +293,95 @@ export default function CreativeStudio() {
     }
   };
 
+  const closeModal = () => {
+    log('closeModal called');
+    setModalOpen(false);
+    setModalError('');
+    setGenerating(false);
+    setModalAction('');
+  };
+
   const handleProductSelect = async (product) => {
+    log('handleProductSelect start', { productId: product.id, productTitle: product.title });
+
     setSelectedProduct(product);
+    setModalOpen(true);
+    setModalError('');
     setGenerating(true);
+    setModalAction('analyze');
     setError('');
 
     try {
+      log('API request start: createCreativeBrief', { productId: product.id });
       const newBrief = await api.createCreativeBrief(product.id);
+      log('API request success: createCreativeBrief', { briefId: newBrief.id });
       setBrief(newBrief);
       setStep('campaign');
-    } catch (err) {
-      setError(`Failed to analyze product: ${err.message}`);
-    } finally {
+      setModalOpen(false);
       setGenerating(false);
+    } catch (err) {
+      log('API request failed: createCreativeBrief', { error: err.message });
+      setModalError(`Failed to analyze product: ${err.message}`);
+      setGenerating(false);
+      // Modal stays open to show error
     }
   };
 
   const handleCampaignSelect = async (index) => {
+    log('handleCampaignSelect start', { campaignIndex: index });
+
     setSelectedCampaignIndex(index);
+    setModalOpen(true);
+    setModalError('');
     setGenerating(true);
-    setError('');
+    setModalAction('select');
 
     try {
+      log('API request start: selectCampaign');
       await api.selectCampaign(brief.id, index);
+      log('API request success: selectCampaign');
       setBrief({ ...brief, selected_campaign_index: index });
       setStep('script');
+      setModalOpen(false);
+      setGenerating(false);
     } catch (err) {
-      setError(`Failed to select campaign: ${err.message}`);
-    } finally {
+      log('API request failed: selectCampaign', { error: err.message });
+      setModalError(`Failed to select campaign: ${err.message}`);
       setGenerating(false);
     }
   };
 
   const handleGenerateScript = async () => {
+    log('handleGenerateScript start', { platform, duration, aspectRatio });
+
+    setModalOpen(true);
+    setModalError('');
     setGenerating(true);
-    setError('');
+    setModalAction('script');
 
     try {
+      log('API request start: generateScript');
       const newScript = await api.generateScript(brief.id, { platform, duration });
+      log('API request success: generateScript', { scriptId: newScript.id });
       setScript(newScript);
       setStep('storyboard');
 
       // Auto-generate storyboard
+      log('API request start: generateStoryboard');
       const newStoryboard = await api.generateStoryboard(newScript.id, aspectRatio);
+      log('API request success: generateStoryboard', { storyboardId: newStoryboard.id });
       setStoryboard(newStoryboard);
+      setModalOpen(false);
+      setGenerating(false);
     } catch (err) {
-      setError(`Failed to generate script: ${err.message}`);
-    } finally {
+      log('API request failed: generateScript/Storyboard', { error: err.message });
+      setModalError(`Failed to generate: ${err.message}`);
       setGenerating(false);
     }
   };
 
   const handleApproveStoryboard = async () => {
+    log('handleApproveStoryboard start');
     setGenerating(true);
     try {
       await api.updateStoryboardStatus(storyboard.id, 'approved');
@@ -341,6 +395,7 @@ export default function CreativeStudio() {
   };
 
   const handleRejectStoryboard = async () => {
+    log('handleRejectStoryboard start');
     setGenerating(true);
     try {
       await api.updateStoryboardStatus(storyboard.id, 'rejected');
@@ -355,7 +410,19 @@ export default function CreativeStudio() {
     }
   };
 
+  const handleRetry = () => {
+    log('handleRetry called', { modalAction });
+    if (modalAction === 'analyze' && selectedProduct) {
+      handleProductSelect(selectedProduct);
+    } else if (modalAction === 'select' && selectedCampaignIndex !== null) {
+      handleCampaignSelect(selectedCampaignIndex);
+    } else if (modalAction === 'script') {
+      handleGenerateScript();
+    }
+  };
+
   const resetWizard = () => {
+    log('resetWizard called');
     setStep('product');
     setSelectedProduct(null);
     setBrief(null);
@@ -363,6 +430,10 @@ export default function CreativeStudio() {
     setScript(null);
     setStoryboard(null);
     setError('');
+    setModalOpen(false);
+    setModalError('');
+    setModalAction('');
+    setGenerating(false);
   };
 
   return (
@@ -383,17 +454,42 @@ export default function CreativeStudio() {
         </div>
       )}
 
-      {generating && (
+      {/* Modal - stays open on error to show message and retry button */}
+      {modalOpen && (
         <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-8 text-center shadow-2xl">
-            <Spinner />
-            <p className="mt-4 text-slate-600 font-medium">
-              {step === 'product' && 'Analyzing product and generating campaigns...'}
-              {step === 'campaign' && 'Selecting campaign...'}
-              {step === 'script' && 'Generating script and storyboard...'}
-              {step === 'storyboard' && 'Processing...'}
-            </p>
-            <p className="text-sm text-slate-400 mt-2">This may take 30-60 seconds</p>
+          <div className="bg-white rounded-xl p-8 text-center shadow-2xl max-w-md mx-4">
+            {generating && !modalError && (
+              <>
+                <Spinner />
+                <p className="mt-4 text-slate-600 font-medium">
+                  {modalAction === 'analyze' && 'Analyzing product and generating campaigns...'}
+                  {modalAction === 'select' && 'Selecting campaign...'}
+                  {modalAction === 'script' && 'Generating script and storyboard...'}
+                </p>
+                <p className="text-sm text-slate-400 mt-2">This may take 30-60 seconds</p>
+              </>
+            )}
+
+            {modalError && (
+              <>
+                <div className="text-red-500 text-4xl mb-4">⚠️</div>
+                <h3 className="text-lg font-semibold text-slate-800 mb-2">Something went wrong</h3>
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm text-left">
+                  <strong>Error:</strong> {modalError}
+                </div>
+                <div className="flex gap-3 justify-center">
+                  <Button onClick={handleRetry}>
+                    Retry
+                  </Button>
+                  <Button variant="secondary" onClick={closeModal}>
+                    Close
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-400 mt-4">
+                  Check browser console for diagnostic logs
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}

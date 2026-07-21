@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../api/client';
 import {
   PageHeader, Button, Badge, Spinner,
@@ -241,10 +241,27 @@ function StoryboardViewer({ storyboard, onApprove, onReject, approving }) {
   );
 }
 
-export default function CreativeStudio() {
-  const [step, setStep] = useState('product');
+export default function CreativeStudio({
+  initialProduct = null,
+  initialBrief = null,
+  onComplete = null,
+  onCancel = null,
+  showHeader = true,
+}) {
+  // Determine initial step based on props
+  const getInitialStep = () => {
+    if (initialBrief) {
+      // Continue from brief state
+      if (initialBrief.selected_campaign_index !== null) return 'script';
+      if (initialBrief.product_analysis) return 'campaign';
+    }
+    if (initialProduct) return 'product'; // Will auto-advance after analysis
+    return 'product';
+  };
+
+  const [step, setStep] = useState(getInitialStep());
   const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialProduct);
   const [error, setError] = useState('');
   const [generating, setGenerating] = useState(false);
 
@@ -253,10 +270,12 @@ export default function CreativeStudio() {
   const [modalError, setModalError] = useState('');
   const [modalAction, setModalAction] = useState(''); // For retry functionality
 
-  // Wizard state
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [brief, setBrief] = useState(null);
-  const [selectedCampaignIndex, setSelectedCampaignIndex] = useState(null);
+  // Wizard state - initialize from props if provided
+  const [selectedProduct, setSelectedProduct] = useState(initialProduct);
+  const [brief, setBrief] = useState(initialBrief);
+  const [selectedCampaignIndex, setSelectedCampaignIndex] = useState(
+    initialBrief?.selected_campaign_index ?? null
+  );
   const [script, setScript] = useState(null);
   const [storyboard, setStoryboard] = useState(null);
 
@@ -265,23 +284,19 @@ export default function CreativeStudio() {
   const [duration, setDuration] = useState(15);
   const [aspectRatio, setAspectRatio] = useState('9:16');
 
+  // Ref to track if auto-start has been triggered
+  const autoStartTriggered = useRef(false);
+
   // Diagnostic logging
-  const log = (action, data = {}) => {
+  const log = useCallback((action, data = {}) => {
     console.log(`[CreativeStudio] ${action}`, {
       timestamp: new Date().toISOString(),
-      modalOpen,
-      generating,
-      step,
-      selectedProductId: selectedProduct?.id,
       ...data,
     });
-  };
-
-  useEffect(() => {
-    loadProducts();
   }, []);
 
-  const loadProducts = async () => {
+  // Memoized product loader
+  const loadProducts = useCallback(async () => {
     try {
       setLoading(true);
       const data = await api.getProducts();
@@ -291,7 +306,14 @@ export default function CreativeStudio() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // Load products on mount if no initial product provided
+  useEffect(() => {
+    if (!initialProduct) {
+      loadProducts();
+    }
+  }, [initialProduct, loadProducts]);
 
   const closeModal = () => {
     log('closeModal called');
@@ -337,6 +359,18 @@ export default function CreativeStudio() {
       // Modal stays open to show error
     }
   };
+
+  // Auto-start analysis if product provided without brief (run once on mount)
+  // The ref ensures this only runs once; handleProductSelect is intentionally
+  // omitted because adding it would require useCallback with many dependencies,
+  // and the ref pattern guarantees single execution regardless.
+  useEffect(() => {
+    if (initialProduct && !initialBrief && !autoStartTriggered.current) {
+      autoStartTriggered.current = true;
+      handleProductSelect(initialProduct);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialProduct, initialBrief]);
 
   const handleCampaignSelect = async (index) => {
     log('handleCampaignSelect start', { campaignIndex: index });
@@ -398,6 +432,10 @@ export default function CreativeStudio() {
       await api.updateStoryboardStatus(storyboard.id, 'approved');
       setStoryboard({ ...storyboard, status: 'approved' });
       setError('');
+      // Notify parent if callback provided
+      if (onComplete) {
+        onComplete({ product: selectedProduct, brief, script, storyboard });
+      }
     } catch (err) {
       setError(`Failed to approve: ${err.message}`);
     } finally {
@@ -434,6 +472,11 @@ export default function CreativeStudio() {
 
   const resetWizard = () => {
     log('resetWizard called');
+    // If onCancel callback provided, use it instead of local reset
+    if (onCancel) {
+      onCancel();
+      return;
+    }
     setStep('product');
     setSelectedProduct(null);
     setBrief(null);
@@ -449,13 +492,15 @@ export default function CreativeStudio() {
 
   return (
     <div>
-      <PageHeader
-        title="Creative Studio"
-        subtitle="AI-powered video ad creation workflow"
-        action={step !== 'product' && (
-          <Button variant="secondary" onClick={resetWizard}>Start Over</Button>
-        )}
-      />
+      {showHeader && (
+        <PageHeader
+          title="Creative Studio"
+          subtitle="AI-powered video ad creation workflow"
+          action={step !== 'product' && (
+            <Button variant="secondary" onClick={resetWizard}>Start Over</Button>
+          )}
+        />
+      )}
 
       <StepIndicator currentStep={step} steps={STEPS} />
 
@@ -617,3 +662,6 @@ export default function CreativeStudio() {
     </div>
   );
 }
+
+// Named exports for reuse in workspace components
+export { CampaignCard, ScriptViewer, StoryboardViewer };

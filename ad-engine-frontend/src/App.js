@@ -18,6 +18,8 @@ import PendingApprovalWaiting from './pages/PendingApprovalWaiting';
 import Billing from './pages/Billing';
 import FraudLogs from './pages/FraudLogs';
 import CreativeStudio from './pages/CreativeStudio';
+import CreativeStudioDashboard from './pages/CreativeStudioDashboard';
+import ProductWorkspace from './pages/ProductWorkspace';
 
 // Navigation items with role-based access
 // Sellers see: Dashboard, Products, Ads, Creative Studio, Analytics, Billing
@@ -97,6 +99,24 @@ function AppShell() {
   const [page, setPage] = useState('dashboard');
   const [buyerMode, setBuyerMode] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+
+  // Creative Studio workspace state
+  const [workspaceProduct, setWorkspaceProduct] = useState(null);
+  const [workspaceTab, setWorkspaceTab] = useState('overview');
+  const [wizardProduct, setWizardProduct] = useState(null);
+  const [wizardBrief, setWizardBrief] = useState(null);
+
+  // Handler for page navigation that resets workspace state when leaving creative
+  const handlePageChange = (newPage) => {
+    if (page === 'creative' && newPage !== 'creative') {
+      // Reset creative workspace state when navigating away
+      setWorkspaceProduct(null);
+      setWorkspaceTab('overview');
+      setWizardProduct(null);
+      setWizardBrief(null);
+    }
+    setPage(newPage);
+  };
 
   // Determine if user is admin early for effects
   const userIsAdmin = user?.role === 'admin';
@@ -193,7 +213,7 @@ function AppShell() {
         <nav className="flex-1 px-3 py-4 space-y-1">
           {/* Filter nav items by role - sellers only see seller items, admins see all */}
           {ALL_NAV.filter(item => item.roles.includes(isAdmin ? 'admin' : 'seller')).map(item => (
-            <button key={item.id} onClick={() => setPage(item.id)}
+            <button key={item.id} onClick={() => handlePageChange(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${effectivePage === item.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}>
               <span>{item.icon}</span>
               <span className="flex-1 text-left">{item.label}</span>
@@ -241,7 +261,62 @@ function AppShell() {
         </div>
       </aside>
       <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-8 py-8"><Page /></div>
+        <div className="max-w-6xl mx-auto px-8 py-8">
+          {/* Special handling for Creative Studio with workspace navigation */}
+          {effectivePage === 'creative' ? (
+            wizardProduct ? (
+              // Wizard mode: show CreativeStudio with product/brief
+              <CreativeStudio
+                initialProduct={wizardProduct}
+                initialBrief={wizardBrief}
+                onComplete={() => {
+                  // Return to workspace after completion
+                  setWizardProduct(null);
+                  setWizardBrief(null);
+                  if (workspaceProduct) {
+                    // Refresh workspace by re-setting product
+                    const p = workspaceProduct;
+                    setWorkspaceProduct(null);
+                    setTimeout(() => setWorkspaceProduct(p), 0);
+                  }
+                }}
+                onCancel={() => {
+                  // Return to workspace or dashboard
+                  setWizardProduct(null);
+                  setWizardBrief(null);
+                }}
+              />
+            ) : workspaceProduct ? (
+              // Workspace mode: show ProductWorkspace
+              <ProductWorkspace
+                product={workspaceProduct}
+                initialTab={workspaceTab}
+                onBack={() => {
+                  setWorkspaceProduct(null);
+                  setWorkspaceTab('overview');
+                }}
+                onStartWizard={(product, brief = null) => {
+                  setWizardProduct(product);
+                  setWizardBrief(brief);
+                }}
+              />
+            ) : (
+              // Dashboard mode: show product list
+              <CreativeStudioDashboard
+                onOpenWorkspace={(product) => {
+                  setWorkspaceProduct(product);
+                  setWorkspaceTab('overview');
+                }}
+                onStartWizard={(product) => {
+                  setWizardProduct(product);
+                  setWizardBrief(null);
+                }}
+              />
+            )
+          ) : (
+            <Page />
+          )}
+        </div>
       </main>
       </div>
     </div>

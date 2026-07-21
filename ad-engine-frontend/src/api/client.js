@@ -122,4 +122,10 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify({ status }),
   }),
+
+  // Creative Studio - Product Workspace endpoints
+  getCreativeProductBriefs: (productId) => request(`/creative-studio/products/${productId}/briefs`),
+  getCreativeProductScripts: (productId) => request(`/creative-studio/products/${productId}/scripts`),
+  getCreativeProductStoryboards: (productId) => request(`/creative-studio/products/${productId}/storyboards`),
+  getCreativeProductStats: (productId) => request(`/creative-studio/products/${productId}/stats`),
 };

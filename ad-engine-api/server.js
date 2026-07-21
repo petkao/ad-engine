@@ -4986,6 +4986,175 @@ app.put('/api/creative-studio/storyboards/:id/status', requireAuth, checkSellerA
   }
 });
 
+// ── PRODUCT-SCOPED CREATIVE STUDIO ENDPOINTS ──────────────────
+
+/**
+ * Shared helper to verify product ownership for Creative Studio endpoints.
+ * Returns { product, error, status } where error/status are set on failure.
+ */
+async function verifyProductAccess(productId, req) {
+  const isAdmin = req.user?.role === 'admin';
+  const userSellerId = req.user?.seller_id;
+
+  // Validate UUID format
+  if (!isUuid(productId)) {
+    return { product: null, error: 'Invalid product ID', status: 400 };
+  }
+
+  // Fetch product
+  const { rows } = await pool.query(
+    'SELECT id, seller_id, title, image_url, category, price, description FROM products WHERE id = $1',
+    [productId]
+  );
+
+  if (rows.length === 0) {
+    return { product: null, error: 'Product not found', status: 404 };
+  }
+
+  const product = rows[0];
+
+  // Check ownership: admins can access any, sellers only their own
+  if (!isAdmin && product.seller_id !== userSellerId) {
+    // Return generic 404 to avoid revealing other sellers' products exist
+    return { product: null, error: 'Product not found', status: 404 };
+  }
+
+  return { product, error: null, status: null };
+}
+
+// Get all briefs for a specific product
+app.get('/api/creative-studio/products/:productId/briefs', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { product, error, status } = await verifyProductAccess(req.params.productId, req);
+    if (error) return res.status(status).json({ error });
+
+    const { rows } = await pool.query(`
+      SELECT id, seller_id, product_id, product_analysis, campaign_concepts,
+             selected_campaign_index, status, created_at, updated_at
+      FROM creative_briefs
+      WHERE product_id = $1
+      ORDER BY created_at DESC
+    `, [product.id]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching product briefs:', err);
+    res.status(500).json({ error: 'Failed to fetch briefs' });
+  }
+});
+
+// Get all scripts for a specific product (via briefs)
+app.get('/api/creative-studio/products/:productId/scripts', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { product, error, status } = await verifyProductAccess(req.params.productId, req);
+    if (error) return res.status(status).json({ error });
+
+    const { rows } = await pool.query(`
+      SELECT cs.id, cs.brief_id, cs.platform, cs.duration_seconds,
+             cs.script_content, cs.evaluation_scores, cs.status,
+             cs.created_at, cs.updated_at,
+             cb.selected_campaign_index,
+             cb.campaign_concepts
+      FROM creative_scripts cs
+      JOIN creative_briefs cb ON cs.brief_id = cb.id
+      WHERE cb.product_id = $1
+      ORDER BY cs.created_at DESC
+    `, [product.id]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching product scripts:', err);
+    res.status(500).json({ error: 'Failed to fetch scripts' });
+  }
+});
+
+// Get all storyboards for a specific product (via scripts and briefs)
+app.get('/api/creative-studio/products/:productId/storyboards', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { product, error, status } = await verifyProductAccess(req.params.productId, req);
+    if (error) return res.status(status).json({ error });
+
+    const { rows } = await pool.query(`
+      SELECT csb.id, csb.script_id, csb.storyboard_content, csb.asset_requirements,
+             csb.render_spec, csb.render_status, csb.render_url, csb.status,
+             csb.created_at, csb.updated_at,
+             cs.platform, cs.duration_seconds,
+             cs.script_content as script_content_preview
+      FROM creative_storyboards csb
+      JOIN creative_scripts cs ON csb.script_id = cs.id
+      JOIN creative_briefs cb ON cs.brief_id = cb.id
+      WHERE cb.product_id = $1
+      ORDER BY csb.created_at DESC
+    `, [product.id]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching product storyboards:', err);
+    res.status(500).json({ error: 'Failed to fetch storyboards' });
+  }
+});
+
+// Get creative stats for a specific product
+app.get('/api/creative-studio/products/:productId/stats', requireAuth, checkSellerApproved, async (req, res) => {
+  try {
+    const { product, error, status } = await verifyProductAccess(req.params.productId, req);
+    if (error) return res.status(status).json({ error });
+
+    // Run all counts in parallel
+    const [briefsRes, scriptsRes, storyboardsRes, latestBriefRes] = await Promise.all([
+      pool.query(`
+        SELECT COUNT(*) as count,
+               COUNT(*) FILTER (WHERE product_analysis IS NOT NULL) as with_analysis,
+               COUNT(*) FILTER (WHERE selected_campaign_index IS NOT NULL) as with_campaign
+        FROM creative_briefs WHERE product_id = $1
+      `, [product.id]),
+      pool.query(`
+        SELECT COUNT(*) as count
+        FROM creative_scripts cs
+        JOIN creative_briefs cb ON cs.brief_id = cb.id
+        WHERE cb.product_id = $1
+      `, [product.id]),
+      pool.query(`
+        SELECT COUNT(*) as count,
+               COUNT(*) FILTER (WHERE csb.status = 'approved') as approved
+        FROM creative_storyboards csb
+        JOIN creative_scripts cs ON csb.script_id = cs.id
+        JOIN creative_briefs cb ON cs.brief_id = cb.id
+        WHERE cb.product_id = $1
+      `, [product.id]),
+      pool.query(`
+        SELECT created_at, updated_at, product_analysis IS NOT NULL as has_analysis,
+               selected_campaign_index IS NOT NULL as has_campaign
+        FROM creative_briefs
+        WHERE product_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `, [product.id])
+    ]);
+
+    const briefCount = parseInt(briefsRes.rows[0]?.count || 0);
+    const scriptCount = parseInt(scriptsRes.rows[0]?.count || 0);
+    const storyboardCount = parseInt(storyboardsRes.rows[0]?.count || 0);
+    const approvedStoryboardCount = parseInt(storyboardsRes.rows[0]?.approved || 0);
+    const latestBrief = latestBriefRes.rows[0] || null;
+
+    res.json({
+      productId: product.id,
+      briefCount,
+      scriptCount,
+      storyboardCount,
+      approvedStoryboardCount,
+      hasProductAnalysis: latestBrief?.has_analysis || false,
+      hasSelectedCampaign: latestBrief?.has_campaign || false,
+      latestBriefCreatedAt: latestBrief?.created_at || null,
+      latestActivityAt: latestBrief?.updated_at || latestBrief?.created_at || null
+    });
+  } catch (err) {
+    console.error('Error fetching product stats:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 
 // Initialize tables and Stripe products before starting server

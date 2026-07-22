@@ -15,10 +15,14 @@ function AnalysisSection({ title, children }) {
 
 function DataRow({ label, value }) {
   if (!value) return null;
+  // Safely convert objects/arrays to string to prevent React crash
+  const displayValue = (typeof value === 'object' && value !== null)
+    ? JSON.stringify(value)
+    : value;
   return (
     <div className="py-2 border-b border-slate-100 last:border-b-0">
       <span className="text-sm text-slate-500">{label}</span>
-      <p className="font-medium text-slate-800">{value}</p>
+      <p className="font-medium text-slate-800">{displayValue}</p>
     </div>
   );
 }
@@ -80,28 +84,27 @@ export default function KnowledgeTab({ briefs, loading }) {
 
       {/* Audience & Positioning */}
       <AnalysisSection title="Target Audience">
-        <DataRow label="Target Audience" value={analysis.targetAudience} />
-        <DataRow label="Brand Voice" value={analysis.brandVoice} />
+        <DataRow label="Demographics" value={analysis.targetAudience?.demographics} />
+        <DataRow label="Psychographics" value={analysis.targetAudience?.psychographics} />
+        {analysis.targetAudience?.painPoints && (
+          <div className="mt-3">
+            <span className="text-sm text-slate-500">Pain Points</span>
+            <ListSection items={analysis.targetAudience.painPoints} />
+          </div>
+        )}
       </AnalysisSection>
 
-      {/* Key Features */}
-      {analysis.keyFeatures && (
-        <AnalysisSection title="Key Features">
-          <ListSection items={analysis.keyFeatures} />
+      {/* Unique Selling Points */}
+      {analysis.uniqueSellingPoints && (
+        <AnalysisSection title="Unique Selling Points">
+          <ListSection items={analysis.uniqueSellingPoints} />
         </AnalysisSection>
       )}
 
-      {/* Pain Points */}
-      {analysis.painPoints && (
-        <AnalysisSection title="Customer Pain Points">
-          <ListSection items={analysis.painPoints} />
-        </AnalysisSection>
-      )}
-
-      {/* Differentiators */}
-      {analysis.differentiators && (
-        <AnalysisSection title="Differentiators">
-          <ListSection items={analysis.differentiators} />
+      {/* Secondary Benefits */}
+      {analysis.secondaryBenefits && (
+        <AnalysisSection title="Secondary Benefits">
+          <ListSection items={analysis.secondaryBenefits} />
         </AnalysisSection>
       )}
 
@@ -112,10 +115,30 @@ export default function KnowledgeTab({ briefs, loading }) {
         </AnalysisSection>
       )}
 
-      {/* Competitive Landscape */}
-      {analysis.competitiveLandscape && (
-        <AnalysisSection title="Competitive Landscape">
-          <p className="text-sm text-slate-700">{analysis.competitiveLandscape}</p>
+      {/* Competitive Position */}
+      {analysis.competitivePosition && (
+        <AnalysisSection title="Competitive Position">
+          <p className="text-sm text-slate-700">{analysis.competitivePosition}</p>
+        </AnalysisSection>
+      )}
+
+      {/* Visual Style */}
+      {analysis.visualStyle && (
+        <AnalysisSection title="Visual Style">
+          <DataRow label="Suggested Tone" value={analysis.visualStyle.suggestedTone} />
+          <DataRow label="Imagery Style" value={analysis.visualStyle.imageryStyle} />
+          {analysis.visualStyle.colorPalette && (
+            <div className="mt-3">
+              <span className="text-sm text-slate-500">Color Palette</span>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {analysis.visualStyle.colorPalette.map((color, idx) => (
+                  <span key={idx} className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-sm">
+                    {color}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </AnalysisSection>
       )}
 

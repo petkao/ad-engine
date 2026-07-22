@@ -267,6 +267,7 @@ function AppShell() {
             wizardProduct ? (
               // Wizard mode: show CreativeStudio with product/brief
               <CreativeStudio
+                key={`wizard-${wizardProduct?.id || 'new'}`}
                 initialProduct={wizardProduct}
                 initialBrief={wizardBrief}
                 onComplete={() => {
@@ -289,6 +290,7 @@ function AppShell() {
             ) : workspaceProduct ? (
               // Workspace mode: show ProductWorkspace
               <ProductWorkspace
+                key={`workspace-${workspaceProduct.id}`}
                 product={workspaceProduct}
                 initialTab={workspaceTab}
                 onBack={() => {
@@ -303,6 +305,7 @@ function AppShell() {
             ) : (
               // Dashboard mode: show product list
               <CreativeStudioDashboard
+                key="creative-dashboard"
                 onOpenWorkspace={(product) => {
                   setWorkspaceProduct(product);
                   setWorkspaceTab('overview');

@@ -4,9 +4,16 @@
 
 set -e
 
-echo "Deploying ad-engine-api to Cloud Run..."
+# Production lives in ad-engine-4da45; pin it so the gcloud default project can't redirect the deploy
+PROJECT_ID="ad-engine-4da45"
+
+# Always deploy this folder, even when the script is run from elsewhere
+cd "$(dirname "$0")"
+
+echo "Deploying ad-engine-api to Cloud Run (project: $PROJECT_ID)..."
 
 gcloud run deploy ad-engine-api \
+  --project "$PROJECT_ID" \
   --source . \
   --region us-west1 \
   --platform managed \

@@ -14,22 +14,60 @@ Add a remote MCP connector pointing to the URL above using the Streamable HTTP t
 
 ## Available Tools
 
-### get_video_ads
-Retrieve currently featured video ads from PinkCurve.
+Server name: `pinkcurve-video-ads`, version 2.0.0. Five tools are registered.
+
+Ad-returning tools only include ads with `format = video` and a media URL. Each ad has: id, headline, body_copy, video_url, thumbnail_url, product_title, price, currency, category, seller_name, intent_tags.
+
+### get_featured_video_ads
+Get currently featured video ads. Use for browsing when the user has no specific intent.
 
 Parameters:
-- limit (optional, integer, 1-20): max number of ads to return. Default 6.
+- limit (optional, integer, 1-20): max number of ads to return. Default 10.
 
-Returns: JSON array of ads, each with id, headline, body_copy, video_url, thumbnail_url, product_title, price, currency, category, seller_name.
+Backend: `GET /api/buyer/featured`
 
-### search_video_ads
-Search PinkCurve video ads by buyer intent using semantic matching.
+Returns: `{ featured: true, count, ads: [...] }`
+
+### search_video_ads_for_buyer
+Search video ads by buyer intent using semantic matching.
 
 Parameters:
-- query (required, string): description of what the buyer is looking for (e.g. "wireless car diagnostics tool")
+- query (required, string): what the buyer is looking for (e.g. "wireless car diagnostics tool")
 - limit (optional, integer, 1-20): max number of results. Default 6.
 
-Returns: Same shape as get_video_ads.
+Backend: `POST /api/buyer/semantic-match`
+
+Returns: `{ query, count, ads: [...] }`
+
+### get_video_ads_by_category
+Get video ads filtered by category (case-insensitive substring match on the ad's category).
+
+Parameters:
+- category (required, string): e.g. "Automotive", "Fashion & Apparel", "Jewelry & Accessories"
+- limit (optional, integer, 1-20): max number of results. Default 6.
+
+Backend: `GET /api/buyer/featured`, filtered in the MCP server
+
+Returns: `{ category, count, ads: [...] }`
+
+### get_ad_details
+Get details for one ad by ID.
+
+Parameters:
+- ad_id (required, UUID string)
+
+Backend: `GET /api/buyer/featured`, looked up in the MCP server. Only ads in the featured list can be found.
+
+Returns: a single ad object (same fields as above).
+
+### list_categories
+List all available ad categories.
+
+Parameters: none
+
+Backend: `GET /api/buyer/categories`
+
+Returns: `{ categories: [...] }`
 
 ## Architecture
 

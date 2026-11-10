@@ -494,6 +494,73 @@ let creativeStudioTablesReady;
 function ensureCreativeStudioTables() {
   if (!creativeStudioTablesReady) {
     creativeStudioTablesReady = pool.query(`
+      -- Product Knowledge: persistent product data for creative workflows
+      CREATE TABLE IF NOT EXISTS product_knowledge (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        seller_id UUID NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+        product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+        product_name VARCHAR(200) NOT NULL,
+        product_description TEXT,
+        product_url TEXT,
+        price_amount NUMERIC(12,2),
+        currency_code CHAR(3) DEFAULT 'USD',
+        price_description TEXT,
+        key_features JSONB NOT NULL DEFAULT '[]'::jsonb,
+        key_benefits JSONB NOT NULL DEFAULT '[]'::jsonb,
+        target_audiences JSONB NOT NULL DEFAULT '[]'::jsonb,
+        unique_selling_points JSONB NOT NULL DEFAULT '[]'::jsonb,
+        differentiators JSONB NOT NULL DEFAULT '[]'::jsonb,
+        brand_voice JSONB NOT NULL DEFAULT '{}'::jsonb,
+        competitive_landscape JSONB NOT NULL DEFAULT '{}'::jsonb,
+        faqs JSONB NOT NULL DEFAULT '[]'::jsonb,
+        specifications JSONB NOT NULL DEFAULT '{}'::jsonb,
+        keywords JSONB NOT NULL DEFAULT '[]'::jsonb,
+        source VARCHAR(50) NOT NULL DEFAULT 'manual',
+        completeness_score INTEGER DEFAULT 0,
+        version INTEGER NOT NULL DEFAULT 1,
+        status VARCHAR(30) NOT NULL DEFAULT 'draft',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT chk_product_knowledge_completeness
+          CHECK (completeness_score >= 0 AND completeness_score <= 100),
+        CONSTRAINT chk_product_knowledge_status
+          CHECK (status IN ('draft', 'active', 'archived'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_product_knowledge_seller
+        ON product_knowledge(seller_id);
+      CREATE INDEX IF NOT EXISTS idx_product_knowledge_product
+        ON product_knowledge(product_id);
+      CREATE INDEX IF NOT EXISTS idx_product_knowledge_status
+        ON product_knowledge(status);
+
+      -- Creative Campaigns: parent container for creative artifacts
+      CREATE TABLE IF NOT EXISTS creative_campaigns (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        seller_id UUID NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+        product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+        knowledge_id UUID REFERENCES product_knowledge(id) ON DELETE SET NULL,
+        title VARCHAR(200) NOT NULL,
+        description TEXT,
+        video_duration INTEGER NOT NULL DEFAULT 15,
+        status VARCHAR(30) NOT NULL DEFAULT 'draft',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT chk_creative_campaigns_duration
+          CHECK (video_duration IN (15, 30, 60)),
+        CONSTRAINT chk_creative_campaigns_status
+          CHECK (status IN ('draft', 'active', 'completed', 'archived'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_creative_campaigns_seller
+        ON creative_campaigns(seller_id);
+      CREATE INDEX IF NOT EXISTS idx_creative_campaigns_product
+        ON creative_campaigns(product_id);
+      CREATE INDEX IF NOT EXISTS idx_creative_campaigns_knowledge
+        ON creative_campaigns(knowledge_id);
+      CREATE INDEX IF NOT EXISTS idx_creative_campaigns_status
+        ON creative_campaigns(status);
+
       -- Creative briefs: stores product analysis and campaign concepts
       CREATE TABLE IF NOT EXISTS creative_briefs (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -544,6 +611,25 @@ function ensureCreativeStudioTables() {
 
       CREATE INDEX IF NOT EXISTS idx_creative_storyboards_script
         ON creative_storyboards (script_id);
+
+      -- Stage 1B: Add campaign_id to existing tables (nullable for backward compatibility)
+      ALTER TABLE creative_briefs
+        ADD COLUMN IF NOT EXISTS campaign_id UUID
+        REFERENCES creative_campaigns(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_creative_briefs_campaign
+        ON creative_briefs(campaign_id);
+
+      ALTER TABLE creative_scripts
+        ADD COLUMN IF NOT EXISTS campaign_id UUID
+        REFERENCES creative_campaigns(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_creative_scripts_campaign
+        ON creative_scripts(campaign_id);
+
+      ALTER TABLE creative_storyboards
+        ADD COLUMN IF NOT EXISTS campaign_id UUID
+        REFERENCES creative_campaigns(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_creative_storyboards_campaign
+        ON creative_storyboards(campaign_id);
     `).catch((err) => {
       creativeStudioTablesReady = undefined;
       console.error('Failed to create creative studio tables:', err.message);

@@ -1,70 +1,85 @@
-# Getting Started with Create React App
+# ad-engine-frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+The PinkCurve web app: a React 19 + Tailwind CSS single-page app with two faces.
 
-## Available Scripts
+- **Public buyer search** at `/`, `/search` and `/browse` (`BuyerLanding.jsx`) for visitors who aren't signed in.
+- **Seller / admin portal** after login, with a sidebar whose pages depend on the user's role.
 
-In the project directory, you can run:
+Hosted on Firebase Hosting (`ad-engine-4da45.web.app`). See [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for how it talks to the API.
 
-### `npm start`
+```mermaid
+flowchart TB
+    V[Visitor] --> R{URL and login state}
+    R -- "/, /search, /browse<br/>not signed in" --> BL[BuyerLanding<br/>semantic search, video ads,<br/>buyer Google sign-in, reviews]
+    R -- /login, /register --> LG[Login]
+    R -- /verify-email --> VE[VerifyEmail]
+    R -- "signed in, not yet approved" --> PW[PendingApprovalWaiting]
+    R -- "signed in seller / admin" --> APP[Portal with sidebar]
+    APP --> SP[Seller + admin pages]
+    APP --> AP[Admin-only pages]
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Pages
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+Navigation is state-based in `src/App.js` (`ALL_NAV` and `PAGES`), not React Router. Admin-only pages are also blocked in code if a seller tries to open them.
 
-### `npm test`
+| Page | File | Who |
+|---|---|---|
+| Dashboard | `pages/Dashboard.jsx` | Admin, seller |
+| Products | `pages/Products.jsx` | Admin, seller (own) |
+| Ads | `pages/Ads.jsx` | Admin, seller (own) |
+| Creative Studio | `pages/CreativeStudio.jsx`, `CreativeStudioDashboard.jsx`, `ProductWorkspace.jsx` | Admin, seller |
+| Analytics | `pages/Analytics.jsx` | Admin, seller |
+| Billing | `pages/Billing.jsx` (Stripe plans, payments, support tickets) | Seller |
+| Pending Approval | `pages/PendingApproval.jsx` (seller approval queue) | Admin |
+| Sellers | `pages/Sellers.jsx` | Admin |
+| Buyers | `pages/Buyers.jsx` | Admin |
+| Ad Event Log | `pages/AdEventLog.jsx` | Admin |
+| Geo Verification | `pages/GeoVerification.jsx` | Admin |
+| Fraud Logs | `pages/FraudLogs.jsx` | Admin |
+| Buyer search demo | `pages/BuyerSearch.jsx` | Not currently in the sidebar |
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### Creative Studio product workspace
 
-### `npm run build`
+`ProductWorkspace.jsx` shows one product with tabs from `pages/workspace/`:
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+| Tab | File | Status |
+|---|---|---|
+| Overview | `OverviewTab.jsx`, `ProductStatusCard.jsx` | Working |
+| Knowledge | `KnowledgeTab.jsx` | UI only — the `product_knowledge` table exists but no API reads or writes it yet |
+| Campaigns | `CampaignsTab.jsx` | Working (briefs and campaign concepts) |
+| Assets | `AssetsTab.jsx` | Working (scripts and storyboards, approve/reject) |
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## Other source files
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+| File | Purpose |
+|---|---|
+| `src/auth/AuthContext.jsx` | Login state, JWT in `localStorage`, `authFetch`, Google sign-in redirect |
+| `src/api/client.js` | API client that adds the bearer token |
+| `src/components/UI.jsx` | Shared UI components |
+| `firebase.json` | Hosting config: `/api/**`, `/auth/**` and `/health` are rewritten to the `ad-engine-api` Cloud Run service |
 
-### `npm run eject`
+## Configuration
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+| Variable | Where | Value |
+|---|---|---|
+| `REACT_APP_API_URL` | `.env.production` | `https://ad-engine-4da45.web.app` — calls go through the Firebase rewrites to Cloud Run |
+| `REACT_APP_API_URL` | not set locally | Defaults to `http://localhost:3001` |
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+`REACT_APP_*` values are baked into the build, so rebuild after changing them.
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## Develop
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+```bash
+npm install
+npm start          # http://localhost:3000, expects the API on http://localhost:3001
+```
 
-## Learn More
+## Build and deploy
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```bash
+npm run build
+firebase deploy --only hosting     # project ad-engine-4da45 (from .firebaserc / firebase use)
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+The build shows some ESLint warnings (unused variables, React hook dependency hints). They don't block the build.

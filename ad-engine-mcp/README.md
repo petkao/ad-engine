@@ -71,19 +71,50 @@ Returns: `{ categories: [...] }`
 
 ## Architecture
 
-This server is a thin wrapper: it calls PinkCurve's existing public API (ad-engine-api, the same backend powering the buyer search page at https://ad-engine-4da45.web.app/search) and reshapes the response for MCP tool calls. It runs as its own Cloud Run service, independent of the main API.
+This server is a thin, stateless wrapper: it calls PinkCurve's existing public API (ad-engine-api, the same backend powering the buyer search page at https://ad-engine-4da45.web.app/search) and reshapes the response for MCP tool calls. It has no database access and no authentication. It runs as its own Cloud Run service (`ad-engine-mcp`, project `ad-engine-4da45`), independent of the main API.
+
+```mermaid
+sequenceDiagram
+    participant C as MCP client<br/>(Claude, Video Agent)
+    participant M as ad-engine-mcp<br/>POST /mcp
+    participant A as ad-engine-api
+
+    C->>M: initialize / tools/list (Streamable HTTP, JSON-RPC)
+    M-->>C: 5 tools
+    C->>M: tools/call search_video_ads_for_buyer {query}
+    M->>A: POST /api/buyer/semantic-match {query}
+    A-->>M: matches (all formats)
+    M->>M: keep video ads with a media URL, trim to limit
+    M-->>C: { query, count, ads: [...] }
+```
+
+Each request creates a fresh `McpServer` and `StreamableHTTPServerTransport` (stateless mode). `GET /health` returns `{ status: "ok" }`.
+
+Known limitation: `get_video_ads_by_category` and `get_ad_details` filter the **featured** list (`/api/buyer/featured`), so ads that aren't featured can't be found by category or ID.
 
 ## Local Development
 
+```bash
 cd ad-engine-mcp
 npm install
 node server.js
+```
 
-Server listens on port 8080 by default (configurable via PORT env var). Set PINKCURVE_API_URL to point at a different backend (e.g. localhost during development).
+Server listens on port 8080 by default (configurable via `PORT`). Set `PINKCURVE_API_URL` to point at a different backend (e.g. `http://localhost:3001` during development); it defaults to the production API.
+
+Quick check:
+
+```bash
+curl -s http://localhost:8080/mcp -X POST \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ## Deployment
 
 ```bash
-# IMPORTANT: Use --clear-base-image to force Dockerfile build (prevents Buildpacks issues)
-gcloud run deploy ad-engine-mcp --source . --region=us-west1 --allow-unauthenticated --clear-base-image
+# IMPORTANT: --clear-base-image forces a Dockerfile build (prevents Buildpacks issues).
+# --project is required because the local gcloud default project may be different.
+gcloud run deploy ad-engine-mcp --source . --region=us-west1 \
+  --project=ad-engine-4da45 --allow-unauthenticated --clear-base-image
 ```

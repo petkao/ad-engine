@@ -8,6 +8,8 @@ Sellers create product listings and video/image ads. Buyers discover products th
 
 ## Repository Structure
 
+Architecture and workflow diagrams: `docs/ARCHITECTURE.md`.
+
 ```
 ad-engine/
 ├── ad-engine-api/       # Node.js/Express backend (Cloud Run)
@@ -31,12 +33,12 @@ ad-engine/
 - **Deploy:** Cloud Run via `./deploy.sh`
 
 ### Frontend (ad-engine-frontend)
-- **Framework:** React 18
+- **Framework:** React 19
 - **Styling:** Tailwind CSS
 - **Deploy:** Firebase Hosting via `npm run deploy`
 
 ### Key Files
-- `ad-engine-api/server.js` - Main API (~3500 lines)
+- `ad-engine-api/server.js` - Main API (~5300 lines)
 - `ad-engine-api/transcriptionService.js` - Whisper video transcription
 - `ad-engine-api/generate-embeddings.js` - Batch embedding generation
 - `ad-engine-api/emailService.js` - Email verification via Resend
@@ -48,7 +50,7 @@ ad-engine/
 # API Development
 cd ad-engine-api
 npm start                           # Start server locally (port 3001)
-./deploy.sh                         # Deploy to Cloud Run
+./deploy.sh                         # Deploy to Cloud Run (project pinned to ad-engine-4da45)
 
 # Generate embeddings
 node generate-embeddings.js         # New ads only
@@ -89,16 +91,16 @@ npm run build && firebase deploy    # Deploy to Firebase
 ## Environment Variables
 
 ### Required (Cloud Run secrets)
-- `DATABASE_URL` or `DB_HOST/DB_USER/DB_PASSWORD/DB_NAME`
+- `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` (`DATABASE_URL` is not supported)
 - `JWT_SECRET`
 - `OPENAI_API_KEY`
 - `STRIPE_SECRET_KEY`
 - `RESEND_API_KEY`
-- `GCS_BUCKET_NAME`
+- `GCP_PROJECT_ID`, `GCP_BUCKET_NAME`
 
 ### Optional
-- `GOOGLE_CLIENT_ID/SECRET` - OAuth
-- `FRONTEND_URL` - CORS origin
+- `GOOGLE_CLIENT_ID/SECRET/CALLBACK_URL` - OAuth (client lives in GCP project `ad-engine-498605`)
+- `CLIENT_URL` - CORS origin and OAuth redirect target
 
 ## Deployment
 

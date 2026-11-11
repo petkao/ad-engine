@@ -20,6 +20,7 @@ import FraudLogs from './pages/FraudLogs';
 import CreativeStudio from './pages/CreativeStudio';
 import CreativeStudioDashboard from './pages/CreativeStudioDashboard';
 import ProductWorkspace from './pages/ProductWorkspace';
+import ChangePasswordModal from './components/ChangePasswordModal';
 
 // Navigation items with role-based access
 // Sellers see: Dashboard, Products, Ads, Creative Studio, Analytics, Billing
@@ -99,6 +100,7 @@ function AppShell() {
   const [page, setPage] = useState('dashboard');
   const [buyerMode, setBuyerMode] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // Creative Studio workspace state
   const [workspaceProduct, setWorkspaceProduct] = useState(null);
@@ -254,10 +256,15 @@ function AppShell() {
               <div className="text-xs text-slate-400 truncate">{user.email}</div>
             </div>
           </div>
+          <button onClick={() => setShowChangePassword(true)}
+            className="w-full text-xs text-slate-500 hover:text-blue-600 hover:bg-blue-50 py-1.5 px-2 rounded-lg transition-all text-left">
+            🔑 Change password
+          </button>
           <button onClick={logout}
             className="w-full text-xs text-slate-500 hover:text-red-500 hover:bg-red-50 py-1.5 px-2 rounded-lg transition-all text-left">
             🚪 Sign out
           </button>
+          {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
         </div>
       </aside>
       <main className="flex-1 overflow-y-auto">

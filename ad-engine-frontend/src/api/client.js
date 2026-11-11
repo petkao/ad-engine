@@ -47,6 +47,9 @@ async function authRequest(path, options = {}) {
 
 export const api = {
   resendVerification: () => authRequest('/auth/resend-verification', { method: 'POST' }),
+  getPasswordStatus: () => authRequest('/auth/password-status'),
+  changePassword: (current_password, new_password) =>
+    authRequest('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) }),
   getStats: () => request('/stats'),
   getSellers: () => request('/sellers'),
   createSeller: (data) => request('/sellers', { method: 'POST', body: JSON.stringify(data) }),

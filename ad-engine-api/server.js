@@ -1326,6 +1326,67 @@ app.post('/auth/logout', (req, res) => {
   req.logout(() => { req.session.destroy(); res.json({ success: true }); });
 });
 
+// ── CHANGE PASSWORD (seller/admin accounts) ──────────────────────
+const PASSWORD_MIN_LENGTH = 8;
+
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: { error: 'Too many password change attempts. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Resolve the signed-in seller/admin account; rejects service and buyer tokens
+async function getOwnSellerAccount(req) {
+  if (!req.user || req.user.auth_type === 'service' || req.user.type === 'buyer' || !req.user.id) return null;
+  const { rows } = await pool.query('SELECT id, password_hash FROM seller_accounts WHERE id = $1', [req.user.id]);
+  return rows[0] || null;
+}
+
+app.get('/auth/password-status', requireAuth, async (req, res) => {
+  try {
+    const account = await getOwnSellerAccount(req);
+    if (!account) return res.status(403).json({ error: 'Not available for this account.' });
+    res.json({ has_password: Boolean(account.password_hash), min_length: PASSWORD_MIN_LENGTH });
+  } catch (err) {
+    console.error('Password status error:', err);
+    res.status(500).json({ error: 'Failed to load password status.' });
+  }
+});
+
+app.post('/auth/change-password', requireAuth, changePasswordLimiter, async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body || {};
+    const account = await getOwnSellerAccount(req);
+    if (!account) return res.status(403).json({ error: 'Not available for this account.' });
+
+    // Google-only accounts have no password; adding one here would let a stolen token create one
+    if (!account.password_hash) {
+      return res.status(400).json({ error: 'This account signs in with Google and has no password to change.' });
+    }
+    if (typeof current_password !== 'string' || typeof new_password !== 'string') {
+      return res.status(400).json({ error: 'Current and new password are required.' });
+    }
+    if (!(await bcrypt.compare(current_password, account.password_hash))) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+    if (new_password.length < PASSWORD_MIN_LENGTH) {
+      return res.status(400).json({ error: `New password must be at least ${PASSWORD_MIN_LENGTH} characters.` });
+    }
+    if (new_password === current_password) {
+      return res.status(400).json({ error: 'New password must be different from the current one.' });
+    }
+
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.query('UPDATE seller_accounts SET password_hash = $1, updated_at = now() WHERE id = $2', [hash, account.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Failed to change password.' });
+  }
+});
+
 // ── EMAIL VERIFICATION ROUTES ────────────────────────────────────
 app.get('/auth/verify-email', async (req, res) => {
   const { token } = req.query;

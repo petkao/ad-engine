@@ -44,6 +44,7 @@ flowchart LR
 | `generate-embeddings.js` | Batch script: embed active ads into `ad_embeddings` (`--force` re-embeds all with transcripts) |
 | `bulk-generate-images.js` | One-off script: generate ad images in bulk |
 | `migrate-images-to-gcs.js` | One-off script: move base64 images into GCS |
+| `scripts/set-password.js` | Admin tool: set a seller/admin password from a hidden terminal prompt (bcrypt cost 12). Also the only way to give a Google-only account a password |
 | `tests/llmProvider.test.js` | Tests for `llmProvider.js` |
 | `Dockerfile` | `node:20-slim` image, copies only the runtime files above |
 | `deploy.sh` | Deploys to Cloud Run (project pinned to `ad-engine-4da45`) |
@@ -58,6 +59,9 @@ POST /auth/resend-verification
 POST /auth/login                 → { success, user, token }
 POST /auth/logout
 GET  /auth/me
+GET  /auth/password-status       JWT; { has_password, min_length }
+POST /auth/change-password       JWT; needs current password; min 8 chars; 5 tries / 15 min.
+                                 Google-only accounts (no password) can't add one here.
 GET  /auth/google                Google OAuth start
 GET  /auth/google/callback       Google OAuth callback (GOOGLE_CALLBACK_URL)
 ```
@@ -161,6 +165,15 @@ Local development reads `.env` (copy `.env.example`). Production values are set 
 npm install
 cp .env.example .env     # fill in values
 npm start                # http://localhost:3001
+```
+
+## Resetting a password
+
+Sellers change their own password from **🔑 Change password** in the portal sidebar. To reset one for them (or set one on a Google-only account), use the script through the Cloud SQL proxy:
+
+```bash
+cloud-sql-proxy ad-engine-4da45:us-west1:ad-engine-db --port 5435 &
+DB_HOST=127.0.0.1 DB_PORT=5435 ENV_FILE=.env.production node scripts/set-password.js seller@example.com
 ```
 
 ## Embeddings

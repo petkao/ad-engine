@@ -979,6 +979,9 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(session({
   store: new PgSession({ pool, tableName: 'session' }),
+  // Firebase Hosting rewrites strip every cookie except "__session" before forwarding
+  // to Cloud Run, so the session cookie must use this name or Google sign-in is lost.
+  name: '__session',
   secret: process.env.SESSION_SECRET || 'ad-engine-secret-key-change-in-production',
   resave: false,
   saveUninitialized: false,

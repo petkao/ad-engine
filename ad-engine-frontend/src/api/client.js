@@ -84,6 +84,8 @@ export const api = {
   rejectSeller: (id) => request(`/admin/sellers/${id}/reject`, { method: 'PUT' }),
   suspendSeller: (id) => request(`/admin/sellers/${id}/suspend`, { method: 'PUT' }),
   unsuspendSeller: (id) => request(`/admin/sellers/${id}/unsuspend`, { method: 'PUT' }),
+  setSellerPassword: (id, new_password) =>
+    request(`/admin/sellers/${id}/password`, { method: 'PUT', body: JSON.stringify({ new_password }) }),
   // Fraud detection endpoints
   getFraudLogs: (params = {}) => {
     const queryParams = new URLSearchParams();

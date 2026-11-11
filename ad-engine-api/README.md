@@ -127,6 +127,7 @@ GET /api/analytics/ads-by-category | buyers-by-platform | sellers-by-plan | buye
 ### Admin (JWT + admin role)
 ```
 GET  /api/admin/sellers/pending | /sellers/pending/count
+PUT  /api/admin/sellers/:id/password      set a seller's login password (seller accounts only; not the MCP token)
 PUT  /api/admin/sellers/:id/approve | reject | suspend | unsuspend
 GET  /api/admin/pending-ads
 POST /api/admin/ads/:id/approve | reject
@@ -169,7 +170,7 @@ npm start                # http://localhost:3001
 
 ## Resetting a password
 
-Sellers change their own password from **🔑 Change password** in the portal sidebar. To reset one for them (or set one on a Google-only account), use the script through the Cloud SQL proxy:
+Sellers change their own password from **🔑 Change password** in the portal sidebar. Admins can set a locked-out seller's password from **Sellers → 🔑 Set password** (with a Generate option), then share it privately. For admin accounts, or from the command line, use the script through the Cloud SQL proxy:
 
 ```bash
 cloud-sql-proxy ad-engine-4da45:us-west1:ad-engine-db --port 5435 &

@@ -5,6 +5,7 @@ import {
   PageHeader, Button, Badge, SearchBar, Spinner,
   Modal, Field, Input, Select
 } from '../components/UI';
+import SetSellerPasswordModal from '../components/SetSellerPasswordModal';
 
 function ApprovalStatusBadge({ status }) {
   const styles = {
@@ -94,6 +95,7 @@ export default function Sellers() {
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState(null); // null | 'create' | seller obj
   const [processing, setProcessing] = useState({});
+  const [passwordSeller, setPasswordSeller] = useState(null);
 
   const load = () => api.getSellers().then(setSellers).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
@@ -202,6 +204,14 @@ export default function Sellers() {
                         >
                           Edit
                         </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => setPasswordSeller(seller)}
+                            className="px-3 py-1.5 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-md whitespace-nowrap"
+                          >
+                            🔑 Set password
+                          </button>
+                        )}
                         {isAdmin && seller.approval_status === 'approved' && (
                           <button
                             onClick={() => handleSuspend(seller)}
@@ -243,6 +253,10 @@ export default function Sellers() {
         >
           <SellerForm initial={modal === 'create' ? {} : modal} onSave={handleSave} onClose={() => setModal(null)} />
         </Modal>
+      )}
+
+      {passwordSeller && (
+        <SetSellerPasswordModal seller={passwordSeller} onClose={() => setPasswordSeller(null)} />
       )}
     </div>
   );

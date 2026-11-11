@@ -2669,6 +2669,38 @@ app.get('/api/admin/sellers/pending/count', requireAuth, requireAdmin, async (re
 });
 
 // Approve seller
+// Admin: set a new password for a seller's login (e.g. seller is locked out).
+// Only touches seller-role accounts, never admin accounts; the MCP service token can't use it.
+app.put('/api/admin/sellers/:id/password', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (req.user.auth_type === 'service') {
+      return res.status(403).json({ error: 'Not available for service tokens.' });
+    }
+    if (!isUuid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid seller ID' });
+    }
+    const { new_password } = req.body || {};
+    if (typeof new_password !== 'string' || new_password.length < PASSWORD_MIN_LENGTH) {
+      return res.status(400).json({ error: `Password must be at least ${PASSWORD_MIN_LENGTH} characters.` });
+    }
+
+    const hash = await bcrypt.hash(new_password, 12);
+    const result = await pool.query(
+      `UPDATE seller_accounts SET password_hash = $1, updated_at = now()
+       WHERE seller_id = $2 AND role = 'seller' RETURNING email`,
+      [hash, req.params.id]
+    );
+    if (!result.rowCount) {
+      return res.status(404).json({ error: 'This seller has no login account.' });
+    }
+    console.log(`[Admin] Password set for seller ${req.params.id} (${result.rowCount} login) by admin ${req.user.id}`);
+    res.json({ success: true, emails: result.rows.map((r) => r.email) });
+  } catch (err) {
+    console.error('Admin set password error:', err);
+    res.status(500).json({ error: 'Failed to set password.' });
+  }
+});
+
 app.put('/api/admin/sellers/:id/approve', requireAuth, requireAdmin, emailRateLimiter, async (req, res) => {
   try {
     if (!isUuid(req.params.id)) {
